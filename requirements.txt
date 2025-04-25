@@ -1,0 +1,12 @@
+fastapi
+uvicorn
+streamlit
+pandas
+openpyxl
+geopy
+ortools
+folium
+scikit-learn
+sqlalchemy
+python-multipart
+requests
