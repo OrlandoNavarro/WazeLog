@@ -166,7 +166,7 @@ def show():
         if st.button("Visualizar rotas no mapa do cenário selecionado", use_container_width=True):
             rotas_sel = st.session_state.cenarios_roteirizacao[idx]['rotas']
             if 'Latitude' in rotas_sel.columns and 'Longitude' in rotas_sel.columns:
-                st.map(rotas_sel.dropna(subset=["Latitude", "Longitude"]))
+                st.map(rotas_sel.rename(columns={'Latitude': 'latitude', 'Longitude': 'longitude'}).dropna(subset=['latitude', 'longitude']))
             else:
                 st.warning("Não há coordenadas suficientes para exibir no mapa.")
 st.markdown("""
