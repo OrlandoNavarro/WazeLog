@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import requests
+import openpyxl
 from pedidos import obter_coordenadas
 from database import salvar_cnpj_enderecos, carregar_cnpj_enderecos, limpar_cnpj_enderecos
 import io
@@ -110,9 +111,11 @@ def show():
         arquivo = st.file_uploader("Upload da planilha de CNPJs", type=["xlsx", "xls", "csv"], key="upload_lote")
         if st.button("Buscar em lote") and arquivo:
             if arquivo.name.endswith(".csv"):
-                df = pd.read_csv(arquivo)
+                df = pd.read_csv(arquivo, dtype=str, keep_default_na=False)
             else:
-                df = pd.read_excel(arquivo)
+                df = pd.read_excel(arquivo, dtype=str)
+            if "CNPJ" in df.columns:
+                df["CNPJ"] = df["CNPJ"].astype(str).str.replace(r'\D', '', regex=True).str.zfill(14)
             st.info(f"Total de CNPJs: {len(df)}")
             resultados = []
             latitudes = []
@@ -148,11 +151,22 @@ def show():
             st.dataframe(df_result, use_container_width=True)
             salvar_cnpj_enderecos(df_result)
             # Exibir todos os pontos no mapa se houver coordenadas
-            df_map = df_result.dropna(subset=["Latitude", "Longitude"])
+            df_map = df_result.dropna(subset=["Latitude", "Longitude"]).copy()
+            df_map["Latitude"] = pd.to_numeric(df_map["Latitude"], errors="coerce")
+            df_map["Longitude"] = pd.to_numeric(df_map["Longitude"], errors="coerce")
+            df_map = df_map.dropna(subset=["Latitude", "Longitude"])
             if not df_map.empty:
                 st.map(df_map.rename(columns={"Latitude": "latitude", "Longitude": "longitude"}))
             output = io.BytesIO()
-            df_result.to_excel(output, index=False, engine='openpyxl')
+            with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                df_result.to_excel(writer, index=False)
+                ws = writer.sheets['Sheet1']
+                # Força a coluna CNPJ como texto (assume que CNPJ é a primeira coluna)
+                for cell in ws[ws.min_column]:
+                    if cell.row == 1:
+                        continue  # pula o cabeçalho
+                    cell.number_format = '@'
+            output.seek(0)
             st.download_button(
                 label="Baixar resultado em Excel",
                 data=output.getvalue(),
@@ -282,19 +296,23 @@ def show():
     if st.button("Limpar dados salvos"):
         limpar_cnpj_enderecos()
         st.success("Dados salvos foram limpos com sucesso!")
-    # Botão para buscar endereço Google Maps e coordenadas dos que não têm endereço
+    # Botão para buscar endereço Google Maps e coordenadas dos que não têm endereço OU estão como 'CNPJ ...'
     if not df_cnpj.empty:
+        mask_nao_encontrado = (
+            df_cnpj["Endereco"].isnull() |
+            (df_cnpj["Endereco"] == "") |
+            (df_cnpj["Endereco"] == "Não encontrado") |
+            df_cnpj["Endereco"].astype(str).str.startswith('CNPJ')
+        )
+        df_nao_encontrado = df_cnpj[mask_nao_encontrado].copy()
+        total = len(df_nao_encontrado)
         if st.button("Buscar Endereço Google Maps e Coordenadas para não localizados", key="btn_gmaps_coord"):
-            mask_nao_encontrado = df_cnpj["Endereco"].isnull() | (df_cnpj["Endereco"] == "") | (df_cnpj["Endereco"] == "Não encontrado")
-            df_nao_encontrado = df_cnpj[mask_nao_encontrado].copy()
-            total = len(df_nao_encontrado)
             if total == 0:
                 st.info("Todos os CNPJs já possuem endereço.")
             else:
                 progress = st.progress(0, text="Buscando endereços e coordenadas...")
                 for idx, (i, row) in enumerate(df_nao_encontrado.iterrows()):
                     cnpj = str(row.get("CNPJ", "")).replace(".", "").replace("/", "").replace("-", "")
-                    # Tenta buscar o endereço real primeiro
                     endereco = buscar_endereco_cnpj(cnpj)
                     if not endereco:
                         endereco = f"CNPJ {cnpj}"  # fallback
@@ -334,3 +352,44 @@ def show():
                 salvar_cnpj_enderecos(df_cnpj)
                 st.success("Coordenadas buscadas para todos os endereços já localizados!")
                 st.rerun()
+    # Botão para reprocessar endereços que estão como 'CNPJ ...' (endereços não encontrados)
+    if not df_cnpj.empty:
+        mask_cnpj_falso = df_cnpj['Endereco'].astype(str).str.startswith('CNPJ')
+        if mask_cnpj_falso.any():
+            if st.button("Reprocessar endereços não encontrados (CNPJ ...)", key="btn_reprocessar_cnpj_falso"):
+                total = mask_cnpj_falso.sum()
+                progress = st.progress(0, text="Reprocessando endereços...")
+                for idx, (i, row) in enumerate(df_cnpj[mask_cnpj_falso].iterrows()):
+                    cnpj = str(row.get("CNPJ", "")).replace(".", "").replace("/", "").replace("-", "")
+                    endereco = buscar_endereco_cnpj(cnpj)
+                    if not endereco:
+                        endereco = f"CNPJ {cnpj}"  # fallback
+                    link = google_maps_link(endereco)
+                    lat, lon = obter_coordenadas(endereco)
+                    df_cnpj.at[i, "Endereco"] = endereco
+                    df_cnpj.at[i, "Google Maps"] = link
+                    df_cnpj.at[i, "Latitude"] = lat
+                    df_cnpj.at[i, "Longitude"] = lon
+                    progress.progress((idx+1)/total, text=f"Processando {idx+1}/{total}")
+                progress.empty()
+                salvar_cnpj_enderecos(df_cnpj)
+                st.success("Reprocessamento concluído!")
+                st.rerun()
+    # Botão para limpar endereços e coordenadas que estão como 'CNPJ ...'
+    if not df_cnpj.empty:
+        mask_cnpj_falso = df_cnpj['Endereco'].astype(str).str.startswith('CNPJ')
+        if mask_cnpj_falso.any():
+            if st.button("Limpar endereços e coordenadas 'CNPJ ...'", key="btn_limpar_cnpj_falso"):
+                for i in df_cnpj[mask_cnpj_falso].index:
+                    df_cnpj.at[i, "Endereco"] = ""
+                    df_cnpj.at[i, "Latitude"] = ""
+                    df_cnpj.at[i, "Longitude"] = ""
+                    df_cnpj.at[i, "Google Maps"] = ""
+                salvar_cnpj_enderecos(df_cnpj)
+                st.success("Endereços e coordenadas 'CNPJ ...' limpos!")
+                st.rerun()
+    st.markdown("""
+⚠️ <b>Aviso importante sobre zeros à esquerda no CNPJ:</b><br>
+Ao abrir a planilha no Excel, use o assistente de importação e defina a coluna CNPJ como <b>Texto</b> para garantir que os zeros à esquerda sejam preservados.<br>
+Se abrir diretamente, o Excel pode remover os zeros iniciais automaticamente.
+""", unsafe_allow_html=True)

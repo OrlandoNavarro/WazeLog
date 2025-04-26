@@ -29,12 +29,14 @@ Wazelog é uma plataforma moderna para roteirização inteligente de entregas, c
 ### 1. Inicie o backend FastAPI
 ```bash
 uvicorn main:app --reload
+python - m uvicorn main:app --reload
 ```
 Acesse: http://localhost:8000
 
 ### 2. Inicie o frontend Streamlit
 ```bash
 streamlit run app/app.py
+python -m streamlit run app/app.py
 ```
 Acesse: http://localhost:8501
 
