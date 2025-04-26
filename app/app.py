@@ -10,6 +10,7 @@ from frota_page import show as show_frota
 from pedidos_page import show as show_pedidos
 from roteirizacao_page import show as show_roteirizacao
 from mapas_page import show as show_mapas
+from cnpj_page import show as show_cnpj
 from database import init_db
 init_db()
 
@@ -88,7 +89,8 @@ menu_itens = [
     ("Frota", "🚚"),
     ("Pedidos", "📦"),
     ("Roteirização", "🗺️"),
-    ("Mapas", "🗺️")
+    ("Mapas", "🗺️"),
+    ("Busca CNPJ", "🔎")
 ]
 
 with st.sidebar:
@@ -132,3 +134,5 @@ elif pagina == "Roteirização":
     show_roteirizacao()
 elif pagina == "Mapas":
     show_mapas()
+elif pagina == "Busca CNPJ":
+    show_cnpj()

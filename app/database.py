@@ -54,6 +54,18 @@ def init_db():
         latitude REAL,
         longitude REAL
     )''')
+    # Tabela para resultados de busca de CNPJ
+    cur.execute('''CREATE TABLE IF NOT EXISTS cnpj_enderecos (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        cnpj TEXT,
+        status TEXT,
+        cod_edata TEXT,
+        cod_mega TEXT,
+        nome TEXT,
+        endereco TEXT,
+        latitude REAL,
+        longitude REAL
+    )''')
     conn.commit()
     conn.close()
 
@@ -212,3 +224,32 @@ def buscar_coordenada(endereco_completo):
     if row and row[0] is not None and row[1] is not None:
         return row[0], row[1]
     return None, None
+
+def salvar_cnpj_enderecos(df):
+    conn = get_connection()
+    df = df.copy()
+    df = df.rename(columns={
+        'CNPJ': 'cnpj',
+        'Status': 'status',
+        'Cód. Edata': 'cod_edata',
+        'Cód. Mega': 'cod_mega',
+        'Nome': 'nome',
+        'Endereço': 'endereco',
+        'Latitude': 'latitude',
+        'Longitude': 'longitude'
+    })
+    df.to_sql('cnpj_enderecos', conn, if_exists='replace', index=False)
+    conn.close()
+
+def carregar_cnpj_enderecos():
+    conn = get_connection()
+    df = pd.read_sql('SELECT * FROM cnpj_enderecos', conn)
+    conn.close()
+    return df
+
+def limpar_cnpj_enderecos():
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute('DELETE FROM cnpj_enderecos')
+    conn.commit()
+    conn.close()

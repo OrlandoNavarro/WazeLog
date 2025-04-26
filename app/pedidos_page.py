@@ -109,7 +109,7 @@ def show():
         colunas_ordenaveis = list(df.columns)
         coluna_ordem = st.selectbox("Ordenar por", colunas_ordenaveis, index=0)
         if coluna_ordem:
-            df = df.sort_values(by=coluna_ordem).reset_index(drop=True)
+            df = df.sort_values(by=df[coluna_ordem].astype(str)).reset_index(drop=True)
         # Filtros avançados
         if 'Região' in df.columns:
             regioes = sorted([r for r in df['Região'].dropna().unique() if r and str(r).strip() and str(r).lower() != 'nan'])
@@ -260,8 +260,8 @@ def show():
             qtde_itens = st.number_input("Qtde. dos Itens", min_value=0, step=1)
             peso_itens = st.number_input("Peso dos Itens", min_value=0.0, step=1.0, format="%.2f")
         with col3:
-            latitude = st.number_input("Latitude", format="%.6f")
-            longitude = st.number_input("Longitude", format="%.6f")
+            latitude = st.number_input("Latitude", format="%.14f", value=-23.51689237191825)
+            longitude = st.number_input("Longitude", format="%.14f", value=-46.48921155767101)
             anomalia = st.checkbox("Anomalia")
             janela_inicio = st.text_input("Janela Início (YYYY-MM-DD HH:MM)")
             janela_fim = st.text_input("Janela Fim (YYYY-MM-DD HH:MM)")
