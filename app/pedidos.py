@@ -23,7 +23,7 @@ def definir_regiao(row):
 
 def obter_coordenadas_opencage(endereco):
     key = next(key_cycle)
-    url = f"https://api.opencagedata.com/geocode/v1/json?q={requests.utils.quote(endereco)}&key={key}&language=pt&countrycode=br&limit=1"
+    url = f"https://api.opencagedata.com/geocode/v1/json?q={requests.utils.quote(str(endereco or ''))}&key={key}&language=pt&countrycode=br&limit=1"
     try:
         resp = requests.get(url, timeout=10)
         if resp.status_code == 200:

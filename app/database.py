@@ -228,6 +228,9 @@ def buscar_coordenada(endereco_completo):
 def salvar_cnpj_enderecos(df):
     conn = get_connection()
     df = df.copy()
+    # Corrigir valores do tipo tuple em todas as colunas
+    for col in df.columns:
+        df[col] = df[col].apply(lambda x: str(x) if isinstance(x, tuple) else x)
     # Padronizar nomes de colunas
     col_renomear = {}
     for col in df.columns:
