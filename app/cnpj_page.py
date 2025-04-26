@@ -4,7 +4,6 @@ import requests
 from pedidos import obter_coordenadas
 from database import salvar_cnpj_enderecos, carregar_cnpj_enderecos, limpar_cnpj_enderecos
 import io
-import time
 
 def buscar_endereco_cnpj(cnpj):
     url1 = f"https://brasilapi.com.br/api/cnpj/v1/{cnpj}"
@@ -76,8 +75,6 @@ def show():
             for idx, row in df.iterrows():
                 cnpj = str(row.get("CNPJ", "")).replace(".", "").replace("/", "").replace("-", "")
                 endereco = buscar_endereco_cnpj(cnpj)
-                # Delay para evitar bloqueio das APIs
-                time.sleep(1)
                 enderecos.append(endereco or "Não encontrado")
                 links.append(google_maps_link(endereco) if endereco else "")
                 lat, lon = (None, None)
@@ -112,51 +109,10 @@ def show():
         st.divider()
         st.subheader("Dados salvos no banco de dados")
         df_salvo = carregar_cnpj_enderecos()
-        # Padronizar nome da coluna para 'Endereco' se existir variações
-        for col in df_salvo.columns:
-            if col.lower() == "endereco" and col != "Endereco":
-                df_salvo = df_salvo.rename(columns={col: "Endereco"})
         if not df_salvo.empty:
             st.dataframe(df_salvo, use_container_width=True)
-            # Botão para tentar buscar endereços não encontrados
-            if "Endereco" in df_salvo.columns:
-                if st.button("Buscar endereços não localizados novamente"):
-                    mask_nao_encontrado = (df_salvo["Endereco"].isnull()) | (df_salvo["Endereco"] == "Não encontrado")
-                    df_nao_encontrado = df_salvo[mask_nao_encontrado].copy()
-                    if not df_nao_encontrado.empty:
-                        for idx, row in df_nao_encontrado.iterrows():
-                            cnpj = str(row.get("CNPJ", "")).replace(".", "").replace("/", "").replace("-", "")
-                            endereco = buscar_endereco_cnpj(cnpj)
-                            lat, lon = (None, None)
-                            if endereco:
-                                lat, lon = obter_coordenadas(endereco)
-                            df_salvo.at[idx, "Endereco"] = endereco or "Não encontrado"
-                            df_salvo.at[idx, "Google Maps"] = google_maps_link(endereco) if endereco else ""
-                            df_salvo.at[idx, "Latitude"] = lat
-                            df_salvo.at[idx, "Longitude"] = lon
-                        salvar_cnpj_enderecos(df_salvo)
-                        st.success("Busca concluída! Dados atualizados.")
-                        st.rerun()
-                    else:
-                        st.info("Todos os CNPJs já possuem endereço.")
-                # Novo botão para buscar coordenadas apenas
-                if st.button("Buscar coordenadas para endereços já localizados"):
-                    mask_sem_coord = (
-                        df_salvo["Endereco"].notnull() &
-                        (df_salvo["Endereco"] != "Não encontrado") &
-                        (df_salvo["Latitude"].isnull() | df_salvo["Longitude"].isnull())
-                    )
-                    df_sem_coord = df_salvo[mask_sem_coord].copy()
-                    if not df_sem_coord.empty:
-                        for idx, row in df_sem_coord.iterrows():
-                            endereco = row.get("Endereco", "")
-                            lat, lon = obter_coordenadas(endereco)
-                            df_salvo.at[idx, "Latitude"] = lat
-                            df_salvo.at[idx, "Longitude"] = lon
-                        salvar_cnpj_enderecos(df_salvo)
-                        st.success("Coordenadas buscadas e atualizadas!")
-                        st.rerun()
-                    else:
-                        st.info("Todos os endereços já possuem coordenadas.")
-            else:
-                st.warning("Atenção: Os dados salvos não possuem a coluna 'Endereco'. Faça uma nova busca em lote para atualizar os dados.")
+        else:
+            st.info("Nenhum dado salvo ainda.")
+        if st.button("Limpar dados salvos"):
+            limpar_cnpj_enderecos()
+            st.success("Dados salvos foram limpos com sucesso!")    
