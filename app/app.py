@@ -1,9 +1,10 @@
 import sys
 import os
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-
 import streamlit as st
+
 st.set_page_config(page_title="Wazelog", layout="wide")
+
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from dashboard_page import show as show_dashboard
 from frota_page import show as show_frota

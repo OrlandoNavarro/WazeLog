@@ -228,38 +228,92 @@ def buscar_coordenada(endereco_completo):
 def salvar_cnpj_enderecos(df):
     conn = get_connection()
     df = df.copy()
-    df = df.rename(columns={
-        'CNPJ': 'cnpj',
-        'Status': 'status',
-        'Cód. Edata': 'cod_edata',
-        'Cód. Mega': 'cod_mega',
-        'Nome': 'nome',
-        'Endereço': 'endereco',
-        'Latitude': 'latitude',
-        'Longitude': 'longitude'
-    })
-    # Remove colunas duplicadas ignorando maiúsculas/minúsculas
-    cols_lower = {}
-    cols_to_drop = []
+    # Padronizar nomes de colunas
+    col_renomear = {}
     for col in df.columns:
-        col_lower = col.lower()
-        if col_lower in cols_lower:
-            cols_to_drop.append(col)
-        else:
-            cols_lower[col_lower] = col
-    if cols_to_drop:
-        df = df.drop(columns=cols_to_drop)
-    # Drop tabela antes de salvar para evitar conflito de colunas
+        if col.lower() == 'cnpj' and col != 'CNPJ':
+            col_renomear[col] = 'CNPJ'
+        if col.lower() == 'status' and col != 'Status':
+            col_renomear[col] = 'Status'
+        if col.lower() in ['cód. edata', 'cod_edata', 'cod. edata'] and col != 'Cód. Edata':
+            col_renomear[col] = 'Cód. Edata'
+        if col.lower() in ['cód. mega', 'cod_mega', 'cod. mega'] and col != 'Cód. Mega':
+            col_renomear[col] = 'Cód. Mega'
+        if col.lower() == 'nome' and col != 'Nome':
+            col_renomear[col] = 'Nome'
+        if col.lower() in ['endereco', 'endereço'] and col != 'Endereco':
+            col_renomear[col] = 'Endereco'
+        if col.lower() == 'latitude' and col != 'Latitude':
+            col_renomear[col] = 'Latitude'
+        if col.lower() == 'longitude' and col != 'Longitude':
+            col_renomear[col] = 'Longitude'
+        if col.lower() in ['google maps', 'googlemaps', 'maps'] and col != 'Google Maps':
+            col_renomear[col] = 'Google Maps'
+    if col_renomear:
+        df = df.rename(columns=col_renomear)
+    # Remover colunas duplicadas
+    df = df.loc[:, ~df.columns.duplicated()]
+    # Garantir todas as colunas padrão
+    colunas_padrao = [
+        'CNPJ', 'Status', 'Cód. Edata', 'Cód. Mega', 'Nome',
+        'Endereco', 'Latitude', 'Longitude', 'Google Maps'
+    ]
+    for col in colunas_padrao:
+        if col not in df.columns:
+            df[col] = ''
+    # Reordenar colunas
+    df = df[[col for col in colunas_padrao if col in df.columns]]
+    # Mesclar com o banco existente para não perder dados antigos
+    try:
+        df_db = pd.read_sql('SELECT * FROM cnpj_enderecos', conn)
+        # Padronizar colunas do banco
+        col_renomear_db = {}
+        for col in df_db.columns:
+            if col.lower() == 'cnpj' and col != 'CNPJ':
+                col_renomear_db[col] = 'CNPJ'
+            if col.lower() == 'status' and col != 'Status':
+                col_renomear_db[col] = 'Status'
+            if col.lower() in ['cód. edata', 'cod_edata', 'cod. edata'] and col != 'Cód. Edata':
+                col_renomear_db[col] = 'Cód. Edata'
+            if col.lower() in ['cód. mega', 'cod_mega', 'cod. mega'] and col != 'Cód. Mega':
+                col_renomear_db[col] = 'Cód. Mega'
+            if col.lower() == 'nome' and col != 'Nome':
+                col_renomear_db[col] = 'Nome'
+            if col.lower() in ['endereco', 'endereço'] and col != 'Endereco':
+                col_renomear_db[col] = 'Endereco'
+            if col.lower() == 'latitude' and col != 'Latitude':
+                col_renomear_db[col] = 'Latitude'
+            if col.lower() == 'longitude' and col != 'Longitude':
+                col_renomear_db[col] = 'Longitude'
+            if col.lower() in ['google maps', 'googlemaps', 'maps'] and col != 'Google Maps':
+                col_renomear_db[col] = 'Google Maps'
+        if col_renomear_db:
+            df_db = df_db.rename(columns=col_renomear_db)
+        df_db = df_db.loc[:, ~df_db.columns.duplicated()]
+        for col in colunas_padrao:
+            if col not in df_db.columns:
+                df_db[col] = ''
+        df_db = df_db[[col for col in colunas_padrao if col in df_db.columns]]
+        # Mesclar pelo CNPJ (atualiza existentes, adiciona novos)
+        df_final = pd.concat([df_db, df]).drop_duplicates(subset=['CNPJ'], keep='last').reset_index(drop=True)
+    except Exception:
+        df_final = df
+    # Salvar no banco
     cur = conn.cursor()
     cur.execute('DROP TABLE IF EXISTS cnpj_enderecos')
     conn.commit()
-    df.to_sql('cnpj_enderecos', conn, if_exists='replace', index=False)
+    df_final.to_sql('cnpj_enderecos', conn, if_exists='replace', index=False)
     conn.close()
 
 def carregar_cnpj_enderecos():
     conn = get_connection()
-    df = pd.read_sql('SELECT * FROM cnpj_enderecos', conn)
+    try:
+        df = pd.read_sql('SELECT * FROM cnpj_enderecos', conn)
+    except Exception:
+        df = pd.DataFrame()
     conn.close()
+    if not df.empty:
+        df = df.drop(columns=['id'], errors="ignore")
     return df
 
 def limpar_cnpj_enderecos():
