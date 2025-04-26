@@ -105,9 +105,9 @@ def buscar_cnpj_no_banco(cnpj):
 
 def show():
     st.header("Busca CNPJ", divider="rainbow")
-    aba = st.tabs(["Buscar em lote", "Buscar individual"])
+    st.write("Faça upload de uma planilha com CNPJs. O sistema irá buscar o endereço e as coordenadas de cada um.")
+    aba = st.tabs(["Buscar em lote"])
     with aba[0]:
-        st.write("Faça upload de uma planilha com CNPJs. O sistema irá buscar o endereço e as coordenadas de cada um.")
         arquivo = st.file_uploader("Upload da planilha de CNPJs", type=["xlsx", "xls", "csv"], key="upload_lote")
         if st.button("Buscar em lote") and arquivo:
             if arquivo.name.endswith(".csv"):
@@ -186,39 +186,14 @@ def show():
                 st.markdown(f"<b>Google Maps:</b> <a href='{link}' target='_blank'>{link}</a>", unsafe_allow_html=True)
                 if pd.notnull(lat) and pd.notnull(lon):
                     st.info(f"Coordenadas: {lat}, {lon}")
-                    st.map({"latitude": [lat], "longitude": [lon]})
+                    df_temp = pd.DataFrame({"latitude": [lat], "longitude": [lon]})
+                    df_temp = df_temp.dropna(subset=["latitude", "longitude"])
+                    df_temp["latitude"] = pd.to_numeric(df_temp["latitude"], errors="coerce")
+                    df_temp["longitude"] = pd.to_numeric(df_temp["longitude"], errors="coerce")
+                    if not df_temp.empty:
+                        st.map(df_temp)
                 else:
                     st.warning("Coordenadas não encontradas para este endereço.")
-    with aba[1]:
-        st.write("Digite um CNPJ para buscar o endereço e as coordenadas.")
-        cnpj = st.text_input("CNPJ", max_chars=18, help="Apenas números, pontos, barras e traços serão ignorados.")
-        if st.button("Buscar", key="buscar_individual") and cnpj:
-            cnpj_limpo = cnpj.replace(".", "").replace("/", "").replace("-", "")
-            # Buscar no banco antes
-            row_banco = buscar_cnpj_no_banco(cnpj_limpo)
-            if row_banco is not None and pd.notnull(row_banco.get("Endereco")) and row_banco.get("Endereco") != "Não encontrado":
-                endereco = row_banco.get("Endereco")
-                lat = row_banco.get("Latitude")
-                lon = row_banco.get("Longitude")
-            else:
-                with st.spinner("Buscando endereço..."):
-                    endereco = buscar_endereco_cnpj(cnpj_limpo)
-                if endereco:
-                    with st.spinner("Buscando coordenadas..."):
-                        lat, lon = obter_coordenadas(endereco)
-                else:
-                    lat, lon = None, None
-            # Não salva no banco para buscas individuais
-            if endereco:
-                link = google_maps_link(endereco)
-                st.markdown(f"✅ <b>Endereço encontrado:</b> <a href='{link}' target='_blank'>{endereco}</a>", unsafe_allow_html=True)
-                if pd.notnull(lat) and pd.notnull(lon):
-                    st.info(f"Coordenadas: {lat}, {lon}")
-                    st.map({"latitude": [lat], "longitude": [lon]})
-                else:
-                    st.warning("Coordenadas não encontradas para este endereço.")
-            else:
-                st.error("Endereço não encontrado para este CNPJ.")
     # Exibir dados salvos
     st.divider()
     st.subheader("Editar CNPJs salvos no banco de dados")
@@ -393,3 +368,40 @@ def show():
 Ao abrir a planilha no Excel, use o assistente de importação e defina a coluna CNPJ como <b>Texto</b> para garantir que os zeros à esquerda sejam preservados.<br>
 Se abrir diretamente, o Excel pode remover os zeros iniciais automaticamente.
 """, unsafe_allow_html=True)
+    # Busca individual agora fica abaixo do aviso
+    st.divider()
+    st.subheader("Busca Individual de CNPJ")
+    st.write("Digite um CNPJ para buscar o endereço e as coordenadas.")
+    cnpj = st.text_input("CNPJ", max_chars=18, help="Apenas números, pontos, barras e traços serão ignorados.")
+    if st.button("Buscar", key="buscar_individual") and cnpj:
+        cnpj_limpo = cnpj.replace(".", "").replace("/", "").replace("-", "")
+        # Buscar no banco antes
+        row_banco = buscar_cnpj_no_banco(cnpj_limpo)
+        if row_banco is not None and pd.notnull(row_banco.get("Endereco")) and row_banco.get("Endereco") != "Não encontrado":
+            endereco = row_banco.get("Endereco")
+            lat = row_banco.get("Latitude")
+            lon = row_banco.get("Longitude")
+        else:
+            with st.spinner("Buscando endereço..."):
+                endereco = buscar_endereco_cnpj(cnpj_limpo)
+            if endereco:
+                with st.spinner("Buscando coordenadas..."):
+                    lat, lon = obter_coordenadas(endereco)
+            else:
+                lat, lon = None, None
+        # Não salva no banco para buscas individuais
+        if endereco:
+            link = google_maps_link(endereco)
+            st.markdown(f"✅ <b>Endereço encontrado:</b> <a href='{link}' target='_blank'>{endereco}</a>", unsafe_allow_html=True)
+            if pd.notnull(lat) and pd.notnull(lon):
+                st.info(f"Coordenadas: {lat}, {lon}")
+                df_temp = pd.DataFrame({"latitude": [lat], "longitude": [lon]})
+                df_temp = df_temp.dropna(subset=["latitude", "longitude"])
+                df_temp["latitude"] = pd.to_numeric(df_temp["latitude"], errors="coerce")
+                df_temp["longitude"] = pd.to_numeric(df_temp["longitude"], errors="coerce")
+                if not df_temp.empty:
+                    st.map(df_temp)
+            else:
+                st.warning("Coordenadas não encontradas para este endereço.")
+        else:
+            st.error("Endereço não encontrado para este CNPJ.")
