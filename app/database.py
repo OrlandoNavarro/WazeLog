@@ -238,6 +238,21 @@ def salvar_cnpj_enderecos(df):
         'Latitude': 'latitude',
         'Longitude': 'longitude'
     })
+    # Remove colunas duplicadas ignorando maiúsculas/minúsculas
+    cols_lower = {}
+    cols_to_drop = []
+    for col in df.columns:
+        col_lower = col.lower()
+        if col_lower in cols_lower:
+            cols_to_drop.append(col)
+        else:
+            cols_lower[col_lower] = col
+    if cols_to_drop:
+        df = df.drop(columns=cols_to_drop)
+    # Drop tabela antes de salvar para evitar conflito de colunas
+    cur = conn.cursor()
+    cur.execute('DROP TABLE IF EXISTS cnpj_enderecos')
+    conn.commit()
     df.to_sql('cnpj_enderecos', conn, if_exists='replace', index=False)
     conn.close()
 
