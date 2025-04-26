@@ -10,7 +10,7 @@ def buscar_endereco_cnpj(cnpj):
     url2 = f"https://publica.cnpj.ws/cnpj/{cnpj}"
     # Primeira tentativa: BrasilAPI
     try:
-        resp = requests.get(url1, timeout=10)
+        resp = requests.get(url1, timeout=20)
         if resp.status_code == 200:
             data = resp.json()
             endereco = f"{data.get('logradouro', '')}, {data.get('numero', '')}, {data.get('bairro', '')}, {data.get('municipio', '')}, {data.get('uf', '')}"
