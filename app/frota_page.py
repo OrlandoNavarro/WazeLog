@@ -86,6 +86,11 @@ def show():
     if arquivo:
         try:
             df = processar_frota(arquivo)
+            # Garante que as colunas de janela de tempo existam com valores padrão
+            if 'Janela Início' not in df.columns:
+                df['Janela Início'] = '05:00'
+            if 'Janela Fim' not in df.columns:
+                df['Janela Fim'] = '17:00'
             st.session_state.df_frota = df.copy()
             salvar_frota(df)
             st.success("Frota importada com sucesso!")
@@ -98,11 +103,26 @@ def show():
     if not df.empty:
         df = df.loc[:, ~df.columns.duplicated()]
         df.columns = [str(col) if col else f"Coluna_{i}" for i, col in enumerate(df.columns)]
+        # Campo para selecionar veículo
+        placa_col = 'Placa' if 'Placa' in df.columns else None
+        veiculo_sel = None
+        if placa_col:
+            placas = df[placa_col].dropna().unique().tolist()
+            veiculo_sel = st.selectbox("Selecione o veículo para editar", ["Todos"] + placas)
+            if veiculo_sel != "Todos":
+                df = df[df[placa_col] == veiculo_sel]
+        # Calcular minutos de janela
+        def minutos_entre(hora_ini, hora_fim):
+            try:
+                h1, m1 = map(int, str(hora_ini).split(":"))
+                h2, m2 = map(int, str(hora_fim).split(":"))
+                return (h2*60 + m2) - (h1*60 + m1)
+            except Exception:
+                return None
+        if 'Janela Início' in df.columns and 'Janela Fim' in df.columns:
+            df['Janela (min)'] = df.apply(lambda row: minutos_entre(row['Janela Início'], row['Janela Fim']), axis=1)
         st.subheader("Editar Frota")
         df_editado = st.data_editor(df, num_rows="dynamic", use_container_width=True, key="frota_editor")
-        if not df_editado.equals(df):
-            st.session_state.df_frota = df_editado.copy()
-            salvar_frota(df_editado)
         st.divider()
         st.subheader("Remover veículos")
         def format_option(x):
@@ -116,35 +136,82 @@ def show():
             st.success("Veículos removidos!")
             st.rerun()
     st.divider()
-    st.subheader("Adicionar novo veículo")
+    st.subheader("Adicionar ou Editar veículo")
+    # Novo: selectbox para selecionar placa para edição
+    placas_existentes = st.session_state.df_frota['Placa'].dropna().unique().tolist() if not st.session_state.df_frota.empty else []
+    placa_editar = st.selectbox("Selecione a placa para editar ou deixe em branco para adicionar novo", ["(Novo)"] + placas_existentes, key="placa_editar")
+    # Preencher campos se for edição
+    if placa_editar != "(Novo)" and placa_editar in st.session_state.df_frota['Placa'].values:
+        veic_row = st.session_state.df_frota[st.session_state.df_frota['Placa'] == placa_editar].iloc[0]
+        placa_val = veic_row['Placa']
+        transportador_val = veic_row.get('Transportador', '')
+        descricao_val = veic_row.get('Descrição', '')
+        veiculo_val = veic_row.get('Veículo', '')
+        capacidade_cx_val = veic_row.get('Capacidade (Cx)', 0)
+        capacidade_kg_val = veic_row.get('Capacidade (Kg)', 0.0)
+        disponivel_raw = veic_row.get('Disponível', True)
+        if isinstance(disponivel_raw, (pd.Series, list)):
+            disponivel_raw = disponivel_raw.iloc[0] if hasattr(disponivel_raw, 'iloc') else disponivel_raw[0]
+        disponivel_val = "Sim" if bool(disponivel_raw) else "Não"
+        janela_inicio_val = veic_row.get('Janela Início', '05:00')
+        janela_fim_val = veic_row.get('Janela Fim', '17:00')
+    else:
+        placa_val = ""
+        transportador_val = ""
+        descricao_val = ""
+        veiculo_val = ""
+        capacidade_cx_val = 0
+        capacidade_kg_val = 0.0
+        disponivel_val = "Sim"
+        janela_inicio_val = "05:00"
+        janela_fim_val = "17:00"
     with st.form("add_veiculo_form"):
         col1, col2, col3 = st.columns(3)
         with col1:
-            placa = st.text_input("Placa")
-            transportador = st.text_input("Transportador")
-            descricao = st.text_input("Descrição")
+            placa = st.text_input("Placa", value=placa_val, key="placa_input")
+            transportador = st.text_input("Transportador", value=transportador_val)
+            descricao = st.text_input("Descrição", value=descricao_val)
         with col2:
-            veiculo = st.text_input("Veículo")
-            capacidade_cx = st.number_input("Capacidade (Cx)", min_value=0, step=1)
-            capacidade_kg = st.number_input("Capacidade (Kg)", min_value=0.0, step=1.0, format="%.2f")
+            veiculo = st.text_input("Veículo", value=veiculo_val)
+            capacidade_cx = st.number_input("Capacidade (Cx)", min_value=0, step=1, value=int(capacidade_cx_val))
+            capacidade_kg = st.number_input("Capacidade (Kg)", min_value=0.0, step=1.0, format="%.2f", value=float(capacidade_kg_val))
         with col3:
-            disponivel = st.selectbox("Disponível", ["Sim", "Não"])
-        submitted = st.form_submit_button("Adicionar veículo")
-        if submitted and placa:
-            novo = {
-                "Placa": placa,
-                "Transportador": transportador,
-                "Descrição": descricao,
-                "Veículo": veiculo,
-                "Capacidade (Cx)": capacidade_cx,
-                "Capacidade (Kg)": capacidade_kg,
-                "Disponível": disponivel.lower() == "sim",
-                "ID Veículo": placa
-            }
-            st.session_state.df_frota = pd.concat([st.session_state.df_frota, pd.DataFrame([novo])], ignore_index=True)
-            salvar_frota(st.session_state.df_frota)
-            st.success("Veículo adicionado!")
-            st.rerun()
+            disponivel = st.selectbox("Disponível", ["Sim", "Não"], index=0 if disponivel_val=="Sim" else 1)
+            janela_inicio = st.text_input("Janela Início (HH:MM)", value=janela_inicio_val)
+            janela_fim = st.text_input("Janela Fim (HH:MM)", value=janela_fim_val)
+        if placa_editar == "(Novo)":
+            submitted = st.form_submit_button("Adicionar veículo")
+            if submitted and placa:
+                novo = {
+                    "Placa": placa,
+                    "Transportador": transportador,
+                    "Descrição": descricao,
+                    "Veículo": veiculo,
+                    "Capacidade (Cx)": capacidade_cx,
+                    "Capacidade (Kg)": capacidade_kg,
+                    "Disponível": disponivel.lower() == "sim",
+                    "ID Veículo": placa,
+                    "Janela Início": janela_inicio,
+                    "Janela Fim": janela_fim
+                }
+                st.session_state.df_frota = pd.concat([st.session_state.df_frota, pd.DataFrame([novo])], ignore_index=True)
+                salvar_frota(st.session_state.df_frota)
+                st.success("Veículo adicionado!")
+                st.rerun()
+        else:
+            submitted = st.form_submit_button("Atualizar veículo")
+            if submitted and placa:
+                # Remove duplicatas de placa e garante índices únicos
+                st.session_state.df_frota = st.session_state.df_frota.drop_duplicates(subset=['Placa'], keep='first').reset_index(drop=True)
+                idxs = st.session_state.df_frota[st.session_state.df_frota['Placa'] == placa_editar].index
+                if len(idxs) > 0:
+                    idx = idxs[0]  # Atualiza apenas a primeira ocorrência
+                    st.session_state.df_frota.loc[idx, [
+                        'Placa', 'Transportador', 'Descrição', 'Veículo', 'Capacidade (Cx)', 'Capacidade (Kg)', 'Disponível', 'ID Veículo', 'Janela Início', 'Janela Fim']
+                    ] = [placa, transportador, descricao, veiculo, capacidade_cx, capacidade_kg, disponivel.lower() == "sim", placa, janela_inicio, janela_fim]
+                    salvar_frota(st.session_state.df_frota)
+                    st.success("Veículo atualizado!")
+                    st.rerun()
     # Botão de limpar frota
     if st.button("Limpar Frota", type="primary"):
         from database import limpar_frota

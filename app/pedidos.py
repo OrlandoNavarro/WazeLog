@@ -54,7 +54,7 @@ def carregar_coordenadas_salvas():
         return {}
     conn = sqlite3.connect(db_path)
     try:
-        df = pd.read_sql('SELECT endereco_completo, latitude, longitude FROM pedidos', conn)
+        df = pd.read_sql('SELECT endereco_completo, latitude, longitude FROM coordenadas', conn)
         return {row['endereco_completo']: (row['latitude'], row['longitude']) for _, row in df.iterrows()}
     except Exception:
         return {}
@@ -72,11 +72,22 @@ def obter_coordenadas(endereco):
     # Busca apenas em APIs externas, pois a busca no banco já é feita no fluxo principal
     lat, lon = obter_coordenadas_opencage(endereco)
     if lat is not None and lon is not None:
+        try:
+            from app.database import salvar_coordenada
+            salvar_coordenada(endereco, lat, lon)
+        except Exception:
+            pass
         return lat, lon
     lat, lon = obter_coordenadas_nominatim(endereco)
+    if lat is not None and lon is not None:
+        try:
+            from app.database import salvar_coordenada
+            salvar_coordenada(endereco, lat, lon)
+        except Exception:
+            pass
     return lat, lon
 
-def processar_pedidos(arquivo, max_linhas=None):
+def processar_pedidos(arquivo, max_linhas=None, tamanho_lote=20, delay_lote=5):
     nome = arquivo.name if hasattr(arquivo, 'name') else str(arquivo)
     ext = os.path.splitext(nome)[-1].lower()
     if ext in ['.xlsx', '.xlsm']:
@@ -99,6 +110,7 @@ def processar_pedidos(arquivo, max_linhas=None):
     longitudes = [None] * n
     progress_bar = st.progress(0, text="Buscando coordenadas...")
     coord_dict = carregar_coordenadas_salvas()
+    tempo_inicio = time.time()
     def buscar_coordenada_db(endereco):
         from app.database import buscar_coordenada
         return buscar_coordenada(endereco)
@@ -109,40 +121,37 @@ def processar_pedidos(arquivo, max_linhas=None):
             latitudes[i] = lat
             longitudes[i] = lon
         else:
-            # Busca primeiro no dicionário carregado
             lat, lon = buscar_coordenadas_no_dict(row['Endereço Completo'], coord_dict)
             if lat is not None and lon is not None:
                 latitudes[i] = lat
                 longitudes[i] = lon
             else:
-                # Busca diretamente no banco de dados (tabela coordenadas)
                 lat, lon = buscar_coordenada_db(row['Endereço Completo'])
                 if lat is not None and lon is not None:
                     latitudes[i] = lat
                     longitudes[i] = lon
                 else:
-                    # Só consulta API externa se não encontrar no banco
                     lat, lon = obter_coordenadas(row['Endereço Completo'])
                     latitudes[i] = lat
                     longitudes[i] = lon
-    threads = []
-    for i, row in df.iterrows():
-        t = threading.Thread(target=processar_linha, args=(i, row))
-        threads.append(t)
-        t.start()
-        # Limita o número de threads simultâneas para não sobrecarregar
-        if len(threads) >= 10:
-            for t in threads:
-                t.join()
-            threads = []
-        progresso = (i + 1) / n
+    # Processamento em lotes
+    for inicio in range(0, n, tamanho_lote):
+        fim = min(inicio + tamanho_lote, n)
+        threads = []
+        for i in range(inicio, fim):
+            row = df.iloc[i]
+            t = threading.Thread(target=processar_linha, args=(i, row))
+            threads.append(t)
+            t.start()
+        for t in threads:
+            t.join()
+        progresso = (fim) / n
         tempo_decorrido = time.time() - tempo_inicio
         tempo_estimado = tempo_decorrido / progresso if progresso > 0 else 0
         tempo_restante = tempo_estimado - tempo_decorrido
-        progress_bar.progress(progresso, text=f"Buscando coordenadas... ({i+1}/{n}) | Tempo restante: {int(tempo_restante)}s")
-    # Aguarda threads restantes
-    for t in threads:
-        t.join()
+        progress_bar.progress(progresso, text=f"Buscando coordenadas... ({fim}/{n}) | Tempo restante: {int(tempo_restante)}s")
+        if fim < n:
+            time.sleep(delay_lote)
     df['Latitude'] = latitudes
     df['Longitude'] = longitudes
     progress_bar.empty()

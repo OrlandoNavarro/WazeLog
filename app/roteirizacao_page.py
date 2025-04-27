@@ -19,6 +19,9 @@ def show():
     frota = carregar_frota()
     # Remove colunas duplicadas mantendo a primeira ocorrência
     frota = frota.loc[:, ~frota.columns.duplicated()]
+    # Filtrar apenas veículos disponíveis
+    if 'Disponível' in frota.columns:
+        frota = frota[frota['Disponível'] == True].reset_index(drop=True)
     if pedidos.empty or frota.empty:
         st.warning("Importe pedidos e frota antes de roteirizar.")
         return
@@ -113,7 +116,17 @@ def show():
         elif tipo == "CVRP":
             rotas = solver_cvrp(pedidos, frota, matriz)
         elif tipo == "VRPTW":
-            rotas = solver_vrptw(pedidos, frota, matriz, janelas_tempo=None)
+            # Coleta as janelas de tempo da frota (veículos)
+            if 'Janela Início' in frota.columns and 'Janela Fim' in frota.columns:
+                janelas_tempo = list(zip(frota['Janela Início'], frota['Janela Fim']))
+            else:
+                janelas_tempo = [("05:00", "17:00")] * len(frota)
+            # Coleta o tempo de descarga dos pedidos
+            if 'Janela de Descarga' in pedidos.columns:
+                tempos_descarga = pedidos['Janela de Descarga'].tolist()
+            else:
+                tempos_descarga = [30] * len(pedidos)
+            rotas = solver_vrptw(pedidos, frota, matriz, janelas_tempo=janelas_tempo, tempos_descarga=tempos_descarga)
         elif tipo == "TSP":
             rotas = solver_tsp(pedidos[['Latitude', 'Longitude']].values, matriz)
         else:

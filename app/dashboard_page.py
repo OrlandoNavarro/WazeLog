@@ -62,8 +62,16 @@ def show():
     st.divider()
     st.markdown('<div class="section-title">🚚 Frota</div>', unsafe_allow_html=True)
     frota = carregar_frota()
-    total_veiculos = len(frota)
-    capacidade_total_kg = frota["Capacidade (Kg)"].sum() if "Capacidade (Kg)" in frota.columns else 0
+    frota = frota.loc[:, ~frota.columns.duplicated()].copy()
+    frota = frota.reset_index(drop=True)  # Remove índices duplicados
+    frota = frota.drop_duplicates()       # Remove linhas duplicadas
+    # Considerar apenas veículos disponíveis
+    if 'Disponível' in frota.columns:
+        frota_disp = frota[frota['Disponível'] == True].copy()
+    else:
+        frota_disp = frota.copy()
+    total_veiculos = len(frota_disp)
+    capacidade_total_kg = frota_disp["Capacidade (Kg)"].sum() if "Capacidade (Kg)" in frota_disp.columns else 0
     col3, col4 = st.columns(2)
     with col3:
         st.markdown(f'<div class="kpi-card"><span class="kpi-icon">🚚</span><div><b>Veículos na Frota</b><br><span style="font-size:1.3rem">{total_veiculos}</span></div></div>', unsafe_allow_html=True)

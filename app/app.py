@@ -40,27 +40,6 @@ st.markdown('''
         height: 48px;
         margin-right: 10px;
     }
-    .sidebar-menu .menu-item {
-        display: flex;
-        align-items: center;
-        gap: 0.7rem;
-        padding: 0.7rem 1rem;
-        border-radius: 8px;
-        font-size: 1.1rem;
-        font-weight: 500;
-        color: #1976d2;
-        margin-bottom: 0.2rem;
-        cursor: pointer;
-        transition: background 0.15s;
-    }
-    .sidebar-menu .menu-item.selected {
-        background: #e3f2fd;
-        color: #1565c0;
-        font-weight: 700;
-    }
-    .sidebar-menu .menu-item:hover {
-        background: #e3f2fd;
-    }
     .stSidebar {
         background: #fff;
         border-radius: 16px;
@@ -84,36 +63,105 @@ st.markdown(
     unsafe_allow_html=True
 )
 
-# Menu lateral customizado com ícones
+# Menu lateral customizado com design premium
+st.markdown('''
+<style>
+.sidebar-menu-premium {
+    display: flex;
+    flex-direction: column;
+    gap: 0.7rem;
+    margin-top: 1.5rem;
+}
+.menu-item-premium {
+    display: flex;
+    align-items: center;
+    gap: 1.1rem;
+    padding: 2.1rem 1.2rem;
+    border-radius: 16px;
+    font-size: 1.25rem;
+    font-weight: 600;
+    color: #1976d2;
+    background: #fff;
+    box-shadow: 0 2px 8px rgba(25, 118, 210, 0.07);
+    border: 1px solid transparent;
+    transition: background 0.18s, color 0.18s, border 0.18s, box-shadow 0.18s;
+    cursor: pointer;
+    position: relative;
+}
+.menu-item-premium.selected {
+    background: linear-gradient(90deg, #1565c0 0%, #1976d2 100%);
+    color: #fff;
+    border: 1px solid #1565c0;
+    box-shadow: 0 4px 16px rgba(25, 118, 210, 0.13);
+    padding: 0.2rem 0.5rem;
+    margin-bottom: 1.1rem;
+}
+.menu-item-premium:hover {
+    background: #e3f2fd;
+    color: #1565c0;
+    border: 2px solid #90caf9;
+}
+.menu-icon-premium {
+    font-size: 2.1rem;
+    filter: drop-shadow(0 1px 2px #90caf9);
+    margin-right: 0.2rem;
+}
+.menu-title-premium {
+    font-size: 1.4rem;
+    font-weight: 800;
+    color: #1976d2;
+    margin-bottom: 1.2rem;
+    letter-spacing: 1px;
+    text-align: left;
+    padding-left: 0.2rem;
+}
+.menu-divider-premium {
+    height: 1px;
+    background: linear-gradient(90deg, #1976d2 0%, #64b5f6 100%);
+    margin: 0.7rem 0 0.7rem 0;
+    border: none;
+}
+</style>
+''', unsafe_allow_html=True)
+
 menu_itens = [
     ("Dashboard", "🏠"),
     ("Frota", "🚚"),
     ("Pedidos", "📦"),
     ("Roteirização", "🗺️"),
-    ("Mapas", "🗺️"),
+    ("Mapas", "🗾"),
     ("Busca CNPJ", "🔎")
 ]
 
 with st.sidebar:
-    st.markdown("<div style='height:1.5rem'></div>", unsafe_allow_html=True)
-    st.markdown("<div class='sidebar-menu'>", unsafe_allow_html=True)
+    st.markdown("<div class='menu-title-premium'>✨ Menu Principal</div>", unsafe_allow_html=True)
+    st.markdown("<div class='sidebar-menu-premium'>", unsafe_allow_html=True)
     pagina = None
     for nome, icone in menu_itens:
-        if st.session_state.get('pagina_selecionada', 'Dashboard') == nome:
-            st.markdown(f"<div class='menu-item selected'>{icone} {nome}</div>", unsafe_allow_html=True)
+        selected = st.session_state.get('pagina_selecionada', 'Dashboard') == nome
+        btn_html = f"""
+        <div class='menu-item-premium{' selected' if selected else ''}'>
+            <span class='menu-icon-premium'>{icone}</span> {nome}
+        </div>
+        """
+        if selected:
+            st.markdown(btn_html, unsafe_allow_html=True)
             pagina = nome
         else:
             if st.button(f"{icone} {nome}", key=f"menu_{nome}"):
                 st.session_state['pagina_selecionada'] = nome
                 st.rerun()
     st.markdown("</div>", unsafe_allow_html=True)
+    st.markdown("<hr class='menu-divider-premium'>", unsafe_allow_html=True)
     # Toggle dark mode
-    modo_escuro = st.toggle("🌙 Modo escuro", value=False)
+    if "modo_escuro" not in st.session_state:
+        st.session_state["modo_escuro"] = False
+    modo_escuro = st.toggle("🌙 Modo escuro", value=st.session_state["modo_escuro"], key="modo_escuro_toggle")
+    st.session_state["modo_escuro"] = modo_escuro
 
 # Tema claro/escuro
-if modo_escuro:
+if st.session_state["modo_escuro"]:
     st.markdown('''
-
         <style>
         body, .stApp { background-color: #181a1b !important; }
         .main-header { background: linear-gradient(90deg, #23272b 0%, #1976d2 100%); color: #fff; }

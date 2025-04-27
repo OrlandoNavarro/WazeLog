@@ -105,11 +105,13 @@ def show():
             df['Latitude'] = None
         if 'Longitude' not in df.columns:
             df['Longitude'] = None
+        if 'Janela de Descarga' not in df.columns:
+            df['Janela de Descarga'] = 30
         # Filtro para ordenar a planilha por coluna
         colunas_ordenaveis = list(df.columns)
         coluna_ordem = st.selectbox("Ordenar por", colunas_ordenaveis, index=0)
         if coluna_ordem:
-            df = df.sort_values(by=df[coluna_ordem].astype(str)).reset_index(drop=True)
+            df = df.sort_values(by=coluna_ordem, key=lambda x: x.astype(str)).reset_index(drop=True)
         # Filtros avançados
         if 'Região' in df.columns:
             regioes = sorted([r for r in df['Região'].dropna().unique() if r and str(r).strip() and str(r).lower() != 'nan'])
@@ -263,8 +265,7 @@ def show():
             latitude = st.number_input("Latitude", format="%.14f", value=-23.51689237191825)
             longitude = st.number_input("Longitude", format="%.14f", value=-46.48921155767101)
             anomalia = st.checkbox("Anomalia")
-            janela_inicio = st.text_input("Janela Início (YYYY-MM-DD HH:MM)")
-            janela_fim = st.text_input("Janela Fim (YYYY-MM-DD HH:MM)")
+            janela_descarga = st.number_input("Janela de Descarga (min)", min_value=1, value=30, step=1, help="Tempo estimado de descarga no cliente (em minutos).")
         submitted = st.form_submit_button("Adicionar pedido")
         if submitted and numero:
             # Gerar Região automaticamente se não preenchida
@@ -285,8 +286,7 @@ def show():
                 "Peso dos Itens": peso_itens,
                 "Latitude": latitude,
                 "Longitude": longitude,
-                "Janela Início": janela_inicio,
-                "Janela Fim": janela_fim,
+                "Janela de Descarga": janela_descarga,
                 "Anomalia": anomalia
             }
             st.session_state.df_pedidos = pd.concat([st.session_state.df_pedidos, pd.DataFrame([novo])], ignore_index=True)
