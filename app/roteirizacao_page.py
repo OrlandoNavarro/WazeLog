@@ -13,8 +13,8 @@ from pedidos import obter_coordenadas # Para geocodificação do endereço de pa
 
 # Constantes para endereço de partida padrão
 DEFAULT_ENDERECO_PARTIDA = "Avenida Antonio Ortega, 3604 - Pinhal, Cabreúva - SP, 13315-000"
-DEFAULT_LAT_PARTIDA = -23.2515006
-DEFAULT_LON_PARTIDA = -47.0845599
+DEFAULT_LAT_PARTIDA = -23.251501
+DEFAULT_LON_PARTIDA = -47.084560
 
 def show():
     # Inicializa o estado da sessão para cenários, se necessário
