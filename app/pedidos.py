@@ -93,34 +93,96 @@ def processar_pedidos(arquivo, max_linhas=None, tamanho_lote=20, delay_lote=5):
     if ext in ['.xlsx', '.xlsm']:
         df = pd.read_excel(arquivo)
     elif ext == '.csv':
-        df = pd.read_csv(arquivo)
+        # Tenta detectar o separador e encoding
+        try:
+            df = pd.read_csv(arquivo, sep=None, engine='python', encoding='utf-8-sig') # Tenta UTF-8 com BOM
+        except Exception:
+            try:
+                # Volta para o arquivo original se a primeira tentativa falhar
+                if hasattr(arquivo, 'seek'):
+                    arquivo.seek(0)
+                df = pd.read_csv(arquivo, sep=None, engine='python') # Tenta detectar automaticamente
+            except Exception as e:
+                 raise ValueError(f"Erro ao ler CSV. Verifique o formato e encoding. Erro: {e}")
     elif ext == '.json':
         df = pd.read_json(arquivo)
     else:
         raise ValueError('Formato de arquivo não suportado.')
-    df['Região'] = df.apply(definir_regiao, axis=1)
-    df['Endereço Completo'] = df['Endereço de Entrega'].astype(str) + ', ' + df['Bairro de Entrega'].astype(str) + ', ' + df['Cidade de Entrega'].astype(str)
-    # Remover colunas originais após criar Endereço Completo
-    df = df.drop(['Endereço de Entrega', 'Bairro de Entrega', 'Cidade de Entrega'], axis=1)
+
+    # --- Lógica de Endereço Ajustada ---
+    # Verifica se 'Endereço Completo' já existe
+    if 'Endereço Completo' not in df.columns:
+        # Se não existe, tenta criar a partir das outras colunas
+        colunas_endereco_necessarias = ['Endereço de Entrega', 'Bairro de Entrega', 'Cidade de Entrega']
+        colunas_faltantes = [col for col in colunas_endereco_necessarias if col not in df.columns]
+
+        if not colunas_faltantes:
+            st.info("Coluna 'Endereço Completo' não encontrada. Criando a partir de 'Endereço de Entrega', 'Bairro', 'Cidade'.")
+            # Garante que as colunas são string antes de concatenar, tratando nulos
+            df['Endereço Completo'] = df['Endereço de Entrega'].fillna('').astype(str) + ', ' + \
+                                     df['Bairro de Entrega'].fillna('').astype(str) + ', ' + \
+                                     df['Cidade de Entrega'].fillna('').astype(str)
+            # Limpa espaços extras e vírgulas redundantes
+            df['Endereço Completo'] = df['Endereço Completo'].str.replace(r'^,\s*|,?\s*,\s*$', '', regex=True).str.strip()
+            df['Endereço Completo'] = df['Endereço Completo'].str.replace(r'\s*,\s*,', ',', regex=True) # Remove vírgulas duplas
+
+            # Remover colunas originais APENAS se 'Endereço Completo' foi criado
+            try:
+                df = df.drop(colunas_endereco_necessarias, axis=1)
+            except KeyError:
+                 st.warning("Não foi possível remover colunas de endereço originais após criar 'Endereço Completo'.")
+        else:
+            # Se 'Endereço Completo' não existe E as colunas para criá-lo também não, levanta erro
+            raise ValueError(f"Erro: Coluna 'Endereço Completo' não encontrada e colunas necessárias para criá-la ({', '.join(colunas_faltantes)}) também estão ausentes.")
+    else:
+        st.info("Coluna 'Endereço Completo' encontrada no arquivo. Usando-a diretamente.")
+        # Garante que a coluna existente seja string
+        df['Endereço Completo'] = df['Endereço Completo'].fillna('').astype(str)
+
+
+    # --- Continua o processamento ---
+    # Definir Região (Tenta usar Cidade/Bairro se existirem, senão usa uma lógica baseada no Endereço Completo se possível)
+    if 'Cidade de Entrega' in df.columns and 'Bairro de Entrega' in df.columns:
+         df['Região'] = df.apply(definir_regiao, axis=1) # Usa a função original
+         # Remove colunas de cidade/bairro se ainda existirem (caso 'Endereço Completo' já existisse)
+         try:
+             df = df.drop(['Bairro de Entrega', 'Cidade de Entrega'], axis=1, errors='ignore')
+         except KeyError:
+             pass # Ignora se já foram removidas
+    else:
+         # Tenta extrair cidade do endereço completo (simplificado)
+         try:
+            df['Região'] = df['Endereço Completo'].str.split(',').str[-1].str.strip()
+         except Exception:
+            df['Região'] = 'N/A' # Fallback
+         st.warning("Colunas 'Cidade de Entrega'/'Bairro de Entrega' não encontradas. 'Região' definida a partir do 'Endereço Completo' (pode ser impreciso).")
+
+
     # Limitar número de linhas para teste, se max_linhas for fornecido
     if max_linhas is not None:
         df = df.head(max_linhas)
+
     n = len(df)
     latitudes = [None] * n
     longitudes = [None] * n
     progress_bar = st.progress(0, text="Buscando coordenadas...")
     coord_dict = carregar_coordenadas_salvas()
     tempo_inicio = time.time()
+
     def buscar_coordenada_db(endereco):
         from app.database import buscar_coordenada
         return buscar_coordenada(endereco)
     def processar_linha(i, row):
-        lat = row.get('Latitude')
-        lon = row.get('Longitude')
+        lat = row.get('Latitude') # Pega Latitude da linha (planilha)
+        lon = row.get('Longitude') # Pega Longitude da linha (planilha)
+
+        # Verifica se Latitude e Longitude da planilha são válidas
         if pd.notnull(lat) and pd.notnull(lon):
+            # Se forem válidas, usa elas diretamente
             latitudes[i] = lat
             longitudes[i] = lon
         else:
+            # SOMENTE SE NÃO forem válidas na planilha, busca no dict/db/api
             lat, lon = buscar_coordenadas_no_dict(row['Endereço Completo'], coord_dict)
             if lat is not None and lon is not None:
                 latitudes[i] = lat
@@ -155,15 +217,28 @@ def processar_pedidos(arquivo, max_linhas=None, tamanho_lote=20, delay_lote=5):
     df['Latitude'] = latitudes
     df['Longitude'] = longitudes
     progress_bar.empty()
+
     # Normalização e detecção de anomalias
     df = df.drop_duplicates()
-    df = df.dropna(subset=['Nº Pedido', 'Endereço Completo'])
+    # Garante que 'Nº Pedido' exista antes de usar no dropna
+    colunas_essenciais_dropna = ['Endereço Completo']
+    if 'Nº Pedido' in df.columns:
+        colunas_essenciais_dropna.append('Nº Pedido')
+    else:
+        st.warning("Coluna 'Nº Pedido' não encontrada. Não será usada para remover linhas nulas.")
+
+    df = df.dropna(subset=colunas_essenciais_dropna)
     df['Anomalia'] = df.isnull().any(axis=1)
-    # Reorganizar colunas na ordem desejada
-    colunas_ordem = [
+
+    # Reorganizar colunas na ordem desejada (adapta se colunas não existirem)
+    colunas_ordem_base = [
         "Nº Pedido", "Cód. Cliente", "Nome Cliente", "Grupo Cliente",
         "Região", "Endereço Completo", "Qtde. dos Itens", "Peso dos Itens",
         "Latitude", "Longitude", "Janela de Descarga", "Anomalia"
     ]
-    df = df[[col for col in colunas_ordem if col in df.columns]]
+    colunas_presentes_ordenadas = [col for col in colunas_ordem_base if col in df.columns]
+    # Adiciona quaisquer outras colunas que não estavam na lista base ao final
+    outras_colunas = [col for col in df.columns if col not in colunas_presentes_ordenadas]
+    df = df[colunas_presentes_ordenadas + outras_colunas]
+
     return df
