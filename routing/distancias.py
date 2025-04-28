@@ -5,7 +5,8 @@ import requests
 import numpy as np
 import logging
 import os
-import traceback # Importar traceback
+import traceback
+import time # <<< Adicionar importação
 
 # Configuração do Logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -44,11 +45,11 @@ def _validar_coordenadas(pontos):
              return False
     return True
 
-def _get_osrm_table_batch(url_base, batch_coords_str, metrica, timeout=60):
+def _get_osrm_table_batch(url_base, batch_coords_str, metrica, timeout=120): # <<< Aumentar timeout padrão para 120s
     """Função auxiliar para fazer uma única chamada GET à API OSRM Table."""
     url = url_base + batch_coords_str
     params = {"annotations": metrica}
-    logging.info(f"Consultando OSRM Table API via GET (Batch): {url[:150]}... (params: {params})")
+    logging.info(f"Consultando OSRM Table API via GET (Batch): {url[:150]}... (params: {params}, timeout={timeout}s)")
     response = requests.get(url, params=params, timeout=timeout)
     logging.info(f"OSRM Status Code (Batch): {response.status_code}")
     response.raise_for_status() # Lança exceção em caso de erro
@@ -82,18 +83,22 @@ def calcular_matriz_distancias(pontos, provider="osrm", metrica="duration"):
     np.fill_diagonal(final_matrix, 0)
 
     url_base = f"{OSRM_SERVER_URL}/table/v1/driving/"
+    delay_between_requests = 0.5 # <<< Adicionar delay de 0.5 segundos
 
     try:
         # Divide os índices dos pontos em lotes
         indices = list(range(n))
         batches = [indices[i:i + MAX_POINTS_PER_GET] for i in range(0, n, MAX_POINTS_PER_GET)]
         num_batches = len(batches)
-        logging.info(f"Dividindo {n} pontos em {num_batches} lotes de até {MAX_POINTS_PER_GET} pontos.")
+        total_requests = num_batches * num_batches
+        request_count = 0
+        logging.info(f"Dividindo {n} pontos em {num_batches} lotes. Total de {total_requests} requisições OSRM.")
 
         # Itera sobre todas as combinações de lotes de origem e destino
         for r_idx, batch_origem in enumerate(batches):
             for c_idx, batch_destino in enumerate(batches):
-                logging.info(f"Calculando submatriz para lote origem {r_idx+1}/{num_batches} e destino {c_idx+1}/{num_batches}")
+                request_count += 1
+                logging.info(f"Calculando submatriz Lote {r_idx+1}/{num_batches} -> Lote {c_idx+1}/{num_batches} (Req {request_count}/{total_requests})")
 
                 # Combina os índices dos dois lotes e remove duplicatas para a chamada API
                 combined_indices = sorted(list(set(batch_origem + batch_destino)))
@@ -106,8 +111,8 @@ def calcular_matriz_distancias(pontos, provider="osrm", metrica="duration"):
                 batch_points = [pontos[i] for i in combined_indices]
                 batch_coords_str = ";".join([f"{lon},{lat}" for lat, lon in batch_points])
 
-                # Faz a chamada GET para o lote combinado
-                partial_matrix_raw = _get_osrm_table_batch(url_base, batch_coords_str, metrica)
+                # Faz a chamada GET para o lote combinado (com timeout aumentado)
+                partial_matrix_raw = _get_osrm_table_batch(url_base, batch_coords_str, metrica) # Timeout já está em 120s
 
                 # Preenche a matriz final com os resultados da matriz parcial
                 for i_orig in batch_origem:
@@ -130,6 +135,10 @@ def calcular_matriz_distancias(pontos, provider="osrm", metrica="duration"):
                              logging.error(f"Erro ao mapear/acessar índices ({i_orig},{j_dest}) -> ({idx_partial_orig},{idx_partial_dest}) na submatriz: {e}")
                              final_matrix[i_orig, j_dest] = INFINITE_VALUE # Marca como infinito em caso de erro
 
+                # <<< Adiciona o delay após processar o lote >>>
+                logging.debug(f"Aguardando {delay_between_requests}s antes da próxima requisição...")
+                time.sleep(delay_between_requests)
+
         # Verifica se algum valor permaneceu infinito (exceto diagonal) - pode indicar falha parcial
         if np.any(final_matrix[~np.eye(n, dtype=bool)] == INFINITE_VALUE):
              logging.warning(f"Matriz final contém valores infinitos ({INFINITE_VALUE}), indicando possíveis falhas em rotas individuais ou lotes.")
@@ -138,15 +147,15 @@ def calcular_matriz_distancias(pontos, provider="osrm", metrica="duration"):
         return final_matrix
 
     except requests.exceptions.Timeout:
-        logging.error(f"Timeout ao conectar com OSRM API durante processamento em lote.")
+        logging.error(f"Timeout (120s) ao conectar com OSRM API durante processamento em lote (Req {request_count}/{total_requests}).")
         return None
     except requests.exceptions.ConnectionError as e:
-        logging.error(f"Erro de conexão com OSRM API durante processamento em lote. Erro: {e}")
+        logging.error(f"Erro de conexão com OSRM API durante processamento em lote (Req {request_count}/{total_requests}). Erro: {e}")
         return None
     except requests.exceptions.HTTPError as e:
         status_code = e.response.status_code if e.response is not None else 'N/A'
         reason = e.response.reason if e.response is not None else 'N/A'
-        logging.error(f"Erro HTTP do OSRM API durante processamento em lote: {status_code} - {reason}.")
+        logging.error(f"Erro HTTP do OSRM API durante processamento em lote (Req {request_count}/{total_requests}): {status_code} - {reason}.")
         try:
             if e.response is not None:
                  logging.error(f"Corpo da resposta OSRM (erro lote): {e.response.text[:500]}")
@@ -154,13 +163,13 @@ def calcular_matriz_distancias(pontos, provider="osrm", metrica="duration"):
             pass
         return None
     except requests.exceptions.RequestException as e:
-        logging.error(f"Erro genérico de requisição ao OSRM API durante processamento em lote: {e}.")
+        logging.error(f"Erro genérico de requisição ao OSRM API durante processamento em lote (Req {request_count}/{total_requests}): {e}.")
         return None
     except ValueError as e: # Erro JSON ou erro levantado por _get_osrm_table_batch
-        logging.error(f"Erro ao processar resposta OSRM em lote: {e}")
+        logging.error(f"Erro ao processar resposta OSRM em lote (Req {request_count}/{total_requests}): {e}")
         return None
     except Exception as e:
-        logging.error(f"Erro inesperado durante cálculo da matriz OSRM em lote: {e}")
+        logging.error(f"Erro inesperado durante cálculo da matriz OSRM em lote (Req {request_count}/{total_requests}): {e}")
         logging.error(traceback.format_exc())
         return None
 

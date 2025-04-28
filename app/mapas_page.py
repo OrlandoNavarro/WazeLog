@@ -1,6 +1,8 @@
 import streamlit as st
 import pandas as pd
-from database import carregar_pedidos
+from database import carregar_pedidos, carregar_endereco_partida # Adicionado carregar_endereco_partida
+import folium
+from streamlit_folium import st_folium
 
 st.markdown("""
 <style>
@@ -79,13 +81,60 @@ def show():
     st.header("Mapas de Rotas", divider="rainbow")
     st.write("Visualize no mapa os pontos dos pedidos e as rotas por veículo.")
     st.divider()
-    pedidos = carregar_pedidos()
-    pedidos_com_coord = pedidos.dropna(subset=["Latitude", "Longitude"])
-    if pedidos_com_coord.empty:
-        st.warning("Não há pedidos com coordenadas para exibir no mapa.")
-        return
-    st.markdown('<div class="section-title">📍 Todos os pontos de entrega</div>', unsafe_allow_html=True)
-    st.map(pedidos_com_coord.rename(columns={'Latitude': 'latitude', 'Longitude': 'longitude'}).dropna(subset=['latitude', 'longitude']))
+
+    # <<< INICIALIZAR O MAPA AQUI >>>
+    # Tenta carregar o endereço de partida para centralizar o mapa inicialmente
+    endereco_partida, lat_partida, lon_partida = carregar_endereco_partida()
+    # Usa coordenadas de partida salvas ou um default (ex: centro de SP)
+    default_location = [lat_partida, lon_partida] if lat_partida and lon_partida else [-23.5505, -46.6333]
+    m = folium.Map(location=default_location, zoom_start=10) # Cria o objeto mapa 'm'
+
+    try:
+        pedidos = carregar_pedidos()
+        # ... (possível carregamento de frota) ...
+
+        if pedidos is not None and not pedidos.empty:
+            pedidos_mapa = pedidos.dropna(subset=['Latitude', 'Longitude']).copy()
+
+            if not pedidos_mapa.empty:
+                # Adiciona marcador para cada pedido
+                for idx, row in pedidos_mapa.iterrows():
+                    num_pedido = str(row.get('Nº Pedido', 'N/A'))
+                    tooltip_text = f"Pedido: {num_pedido}<br>Cliente: {row.get('Nome Cliente', '')}"
+
+                    folium.CircleMarker(
+                        location=[row['Latitude'], row['Longitude']],
+                        radius=5,
+                        color='red',
+                        fill=True,
+                        fill_color='red',
+                        fill_opacity=0.7,
+                        tooltip=tooltip_text
+                    ).add_to(m) # Agora 'm' existe
+
+                # Ajusta o zoom para conter todos os pedidos
+                map_bounds = [
+                    [pedidos_mapa['Latitude'].min(), pedidos_mapa['Longitude'].min()],
+                    [pedidos_mapa['Latitude'].max(), pedidos_mapa['Longitude'].max()]
+                ]
+                m.fit_bounds(map_bounds, padding=(0.01, 0.01))
+
+            else:
+                st.warning("Nenhum pedido com coordenadas válidas para exibir no mapa.")
+                # Mapa já foi criado com localização default
+
+        else:
+            st.warning("Não foi possível carregar os dados dos pedidos.")
+            # Mapa já foi criado com localização default
+
+        # Exibe o mapa (agora 'm' sempre existe)
+        st_folium(m, width=725, height=500)
+
+    except Exception as e:
+        st.error(f"Ocorreu um erro inesperado: {str(e)}")
+        import traceback
+        traceback.print_exc()
+
     # Exibir rotas por placa se houver cenários roteirizados
     if 'cenarios_roteirizacao' in st.session_state and st.session_state.cenarios_roteirizacao:
         st.divider()
