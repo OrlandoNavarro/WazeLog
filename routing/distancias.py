@@ -6,7 +6,7 @@ import numpy as np
 import logging
 import os
 import traceback
-import time # <<< Adicionar importação
+import time
 
 # Configuração do Logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -45,23 +45,61 @@ def _validar_coordenadas(pontos):
              return False
     return True
 
-def _get_osrm_table_batch(url_base, batch_coords_str, metrica, timeout=120): # <<< Aumentar timeout padrão para 120s
-    """Função auxiliar para fazer uma única chamada GET à API OSRM Table."""
+# <<< Modificar _get_osrm_table_batch para incluir retentativas >>>
+def _get_osrm_table_batch(url_base, batch_coords_str, metrica, timeout=120, max_retries=3, retry_delay=5):
+    """
+    Faz a requisição GET para a OSRM Table API, com retentativas para erros 5xx.
+    """
+    matriz_key = 'distances' if metrica == 'distance' else 'durations'
+    params = {'annotations': metrica}
     url = url_base + batch_coords_str
-    params = {"annotations": metrica}
-    logging.info(f"Consultando OSRM Table API via GET (Batch): {url[:150]}... (params: {params}, timeout={timeout}s)")
-    response = requests.get(url, params=params, timeout=timeout)
-    logging.info(f"OSRM Status Code (Batch): {response.status_code}")
-    response.raise_for_status() # Lança exceção em caso de erro
-    data = response.json()
-    if data.get('code') != 'Ok':
-        raise ValueError(f"Erro na resposta da API OSRM (Batch): {data.get('message', 'Mensagem não disponível')}")
-    matriz_key = f"{metrica}s"
-    if matriz_key not in data:
-        raise ValueError(f"Resposta da API OSRM (Batch) não contém a chave esperada '{matriz_key}'.")
-    return data[matriz_key] # Retorna a matriz parcial (lista de listas)
 
-def calcular_matriz_distancias(pontos, provider="osrm", metrica="duration"):
+    for attempt in range(max_retries):
+        try:
+            logging.info(f"Consultando OSRM Table API via GET (Batch - Tentativa {attempt + 1}/{max_retries}): {url_base}... (params: {params}, timeout={timeout}s)")
+            response = requests.get(url, params=params, timeout=timeout)
+            logging.info(f"OSRM Status Code (Batch): {response.status_code}")
+
+            if response.status_code == 200:
+                data = response.json()
+                if data.get('code') == 'Ok' and matriz_key in data:
+                    return data[matriz_key]
+                else:
+                    logging.error(f"Resposta OSRM OK, mas dados inválidos ou chave '{matriz_key}' ausente. Resposta: {data}")
+                    return None # Retorna None se a resposta não for válida
+
+            # <<< Lógica de Retentativa para erros 5xx >>>
+            elif response.status_code >= 500:
+                logging.warning(f"Erro HTTP {response.status_code} do OSRM API (Tentativa {attempt + 1}/{max_retries}). Tentando novamente em {retry_delay}s...")
+                if attempt < max_retries - 1: # Não espera na última tentativa
+                    time.sleep(retry_delay)
+                else:
+                    logging.error(f"Máximo de retentativas ({max_retries}) atingido para erro {response.status_code}.")
+                    logging.error(f"Corpo da resposta OSRM (erro lote): {response.text}")
+                    return None # Falhou após retentativas
+            else: # Outros erros HTTP (ex: 4xx) - não tenta novamente
+                logging.error(f"Erro HTTP {response.status_code} inesperado do OSRM API: {response.text}")
+                return None
+
+        except requests.exceptions.Timeout:
+            logging.warning(f"Timeout ({timeout}s) ao conectar com OSRM API (Tentativa {attempt + 1}/{max_retries}). Tentando novamente em {retry_delay}s...")
+            if attempt < max_retries - 1:
+                time.sleep(retry_delay)
+            else:
+                logging.error(f"Máximo de retentativas ({max_retries}) atingido devido a timeouts.")
+                return None # Falhou após retentativas
+        except requests.exceptions.RequestException as e:
+            logging.error(f"Erro de requisição ao OSRM API (Tentativa {attempt + 1}/{max_retries}): {e}")
+            # Pode ser um erro de conexão, etc. Tenta novamente.
+            if attempt < max_retries - 1:
+                time.sleep(retry_delay)
+            else:
+                logging.error(f"Máximo de retentativas ({max_retries}) atingido devido a erros de requisição.")
+                return None # Falhou após retentativas
+
+    return None # Caso algo inesperado ocorra no loop
+
+def calcular_matriz_distancias(pontos, provider="osrm", metrica="duration", progress_callback=None):
     """
     Calcula a matriz de distâncias ou tempos entre uma lista de pontos.
     Usa GET em lotes se o número de pontos for muito grande.
@@ -111,8 +149,13 @@ def calcular_matriz_distancias(pontos, provider="osrm", metrica="duration"):
                 batch_points = [pontos[i] for i in combined_indices]
                 batch_coords_str = ";".join([f"{lon},{lat}" for lat, lon in batch_points])
 
-                # Faz a chamada GET para o lote combinado (com timeout aumentado)
-                partial_matrix_raw = _get_osrm_table_batch(url_base, batch_coords_str, metrica) # Timeout já está em 120s
+                # <<< Chama a função _get_osrm_table_batch modificada (com retentativas) >>>
+                partial_matrix_raw = _get_osrm_table_batch(url_base, batch_coords_str, metrica)
+
+                # <<< Adiciona verificação se partial_matrix_raw é None >>>
+                if partial_matrix_raw is None:
+                    logging.error(f"Falha ao obter dados do OSRM para o lote (Req {request_count}/{total_requests}) após retentativas. Abortando cálculo da matriz.")
+                    return None # Aborta o cálculo se uma requisição falhar permanentemente
 
                 # Preenche a matriz final com os resultados da matriz parcial
                 for i_orig in batch_origem:
@@ -135,9 +178,16 @@ def calcular_matriz_distancias(pontos, provider="osrm", metrica="duration"):
                              logging.error(f"Erro ao mapear/acessar índices ({i_orig},{j_dest}) -> ({idx_partial_orig},{idx_partial_dest}) na submatriz: {e}")
                              final_matrix[i_orig, j_dest] = INFINITE_VALUE # Marca como infinito em caso de erro
 
-                # <<< Adiciona o delay após processar o lote >>>
-                logging.debug(f"Aguardando {delay_between_requests}s antes da próxima requisição...")
-                time.sleep(delay_between_requests)
+                # Chama o callback
+                if progress_callback:
+                    try:
+                        progress_callback(request_count, total_requests)
+                    except Exception as e:
+                        logging.error(f"Erro no callback de progresso: {e}")
+
+                # Adiciona o delay (pode ser removido ou ajustado se as retentativas tiverem delay)
+                # logging.debug(f"Aguardando {delay_between_requests}s antes da próxima requisição...")
+                # time.sleep(delay_between_requests) # Comentado pois já há delay nas retentativas
 
         # Verifica se algum valor permaneceu infinito (exceto diagonal) - pode indicar falha parcial
         if np.any(final_matrix[~np.eye(n, dtype=bool)] == INFINITE_VALUE):
