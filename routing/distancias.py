@@ -4,7 +4,8 @@ Cálculo de matriz de distâncias/tempos entre pontos usando OSRM, Mapbox, Googl
 import requests
 import numpy as np
 import logging
-import os # Adicionado para variáveis de ambiente
+import os
+import traceback # Importar traceback
 
 # Configuração do Logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -13,112 +14,154 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 OSRM_SERVER_URL = os.environ.get("OSRM_URL", "http://router.project-osrm.org")
 
 # Constante para valor grande representando infinito para OR-Tools
-# Usar np.inf pode ser problemático se o solver não o suportar diretamente em todas as situações.
-# Um valor inteiro grande é frequentemente mais seguro.
 INFINITE_VALUE = 9999999 # Ajuste conforme necessário
+
+# Limite máximo de pontos por requisição GET (ajuste conforme necessário)
+MAX_POINTS_PER_GET = 50 # Definir um limite seguro para GET
 
 def _validar_coordenadas(pontos):
     """Verifica se a lista de pontos contém coordenadas válidas."""
     if not isinstance(pontos, list):
         logging.error("Entrada 'pontos' não é uma lista.")
         return False
+    if not pontos: # Adiciona verificação para lista vazia
+        logging.warning("Lista de pontos está vazia.")
+        return True # Lista vazia é "válida" para evitar erro, mas resultará em matriz 0x0
     for i, ponto in enumerate(pontos):
         if not isinstance(ponto, (tuple, list)) or len(ponto) != 2:
             logging.error(f"Ponto inválido na posição {i}: {ponto}. Deve ser tupla/lista de 2 elementos.")
             return False
-        lat, lon = ponto
-        if not isinstance(lat, (int, float)) or not isinstance(lon, (int, float)):
-            logging.error(f"Coordenadas inválidas na posição {i}: {ponto}. Devem ser numéricas.")
-            return False
-        if not (-90 <= lat <= 90 and -180 <= lon <= 180):
-            logging.warning(f"Coordenadas fora do intervalo padrão na posição {i}: ({lat}, {lon}).")
-            # Não retorna False aqui, apenas avisa, pois podem existir sistemas de coordenadas diferentes
-            # Mas para OSRM padrão, isso pode indicar um erro.
+        try:
+            lat, lon = ponto
+            if not isinstance(lat, (int, float)) or not isinstance(lon, (int, float)):
+                logging.error(f"Coordenadas inválidas na posição {i}: {ponto}. Devem ser numéricas.")
+                return False
+            # Relaxando a validação estrita de range, pois OSRM pode lidar com pequenas imprecisões
+            # if not (-90 <= lat <= 90 and -180 <= lon <= 180):
+            #     logging.warning(f"Coordenadas fora do intervalo padrão na posição {i}: ({lat}, {lon}).")
+        except (TypeError, ValueError) as e:
+             logging.error(f"Erro ao desempacotar ou validar coordenadas na posição {i}: {ponto} - {e}")
+             return False
     return True
+
+def _get_osrm_table_batch(url_base, batch_coords_str, metrica, timeout=60):
+    """Função auxiliar para fazer uma única chamada GET à API OSRM Table."""
+    url = url_base + batch_coords_str
+    params = {"annotations": metrica}
+    logging.info(f"Consultando OSRM Table API via GET (Batch): {url[:150]}... (params: {params})")
+    response = requests.get(url, params=params, timeout=timeout)
+    logging.info(f"OSRM Status Code (Batch): {response.status_code}")
+    response.raise_for_status() # Lança exceção em caso de erro
+    data = response.json()
+    if data.get('code') != 'Ok':
+        raise ValueError(f"Erro na resposta da API OSRM (Batch): {data.get('message', 'Mensagem não disponível')}")
+    matriz_key = f"{metrica}s"
+    if matriz_key not in data:
+        raise ValueError(f"Resposta da API OSRM (Batch) não contém a chave esperada '{matriz_key}'.")
+    return data[matriz_key] # Retorna a matriz parcial (lista de listas)
 
 def calcular_matriz_distancias(pontos, provider="osrm", metrica="duration"):
     """
     Calcula a matriz de distâncias ou tempos entre uma lista de pontos.
-
-    Args:
-        pontos (list): Lista de tuplas (latitude, longitude).
-        provider (str): Provedor de roteamento (atualmente suporta apenas "osrm").
-        metrica (str): 'duration' (tempo em segundos) ou 'distance' (distância em metros).
-
-    Returns:
-        np.ndarray: Matriz NxN com os valores da métrica solicitada, ou None em caso de erro.
-                    Retorna matriz de zeros se n <= 1.
+    Usa GET em lotes se o número de pontos for muito grande.
     """
-    n = len(pontos)
     if not _validar_coordenadas(pontos):
-        # Erro já logado em _validar_coordenadas
-        return None # Retorna None se a validação falhar
+        return None
 
+    n = len(pontos)
     if n <= 1:
-        logging.info(f"Número de pontos ({n}) insuficiente para calcular matriz. Retornando matriz de zeros.")
-        return np.zeros((n, n))
+        logging.info(f"Número de pontos ({n}) insuficiente. Retornando matriz ({n},{n}).")
+        return np.zeros((n, n), dtype=int)
 
     if provider.lower() != "osrm":
         logging.error(f"Provedor '{provider}' não suportado.")
-        raise NotImplementedError(f"Provedor '{provider}' não suportado.")
+        return None
 
-    # Formata os pontos para a URL do OSRM: longitude,latitude;longitude,latitude;...
-    coords_str = ";".join([f"{lon},{lat}" for lat, lon in pontos])
-    # Monta a URL para o serviço 'table'
-    url = f"{OSRM_SERVER_URL}/table/v1/driving/{coords_str}"
-    params = {
-        "annotations": metrica # Pede durations ou distances
-    }
+    # Inicializa a matriz final com valores infinitos (ou zero na diagonal)
+    final_matrix = np.full((n, n), INFINITE_VALUE, dtype=int)
+    np.fill_diagonal(final_matrix, 0)
+
+    url_base = f"{OSRM_SERVER_URL}/table/v1/driving/"
 
     try:
-        logging.info(f"Consultando OSRM Table API: {url} com params: {params}")
-        response = requests.get(url, params=params, timeout=60) # Timeout de 60s
-        response.raise_for_status()  # Lança exceção para erros HTTP (4xx ou 5xx)
-        data = response.json()
+        # Divide os índices dos pontos em lotes
+        indices = list(range(n))
+        batches = [indices[i:i + MAX_POINTS_PER_GET] for i in range(0, n, MAX_POINTS_PER_GET)]
+        num_batches = len(batches)
+        logging.info(f"Dividindo {n} pontos em {num_batches} lotes de até {MAX_POINTS_PER_GET} pontos.")
 
-        if data['code'] != 'Ok':
-            logging.error(f"Erro na resposta da API OSRM: {data.get('message', 'Mensagem não disponível')}")
-            return None
+        # Itera sobre todas as combinações de lotes de origem e destino
+        for r_idx, batch_origem in enumerate(batches):
+            for c_idx, batch_destino in enumerate(batches):
+                logging.info(f"Calculando submatriz para lote origem {r_idx+1}/{num_batches} e destino {c_idx+1}/{num_batches}")
 
-        matriz_key = f"{metrica}s" # 'durations' ou 'distances'
-        if matriz_key not in data:
-            logging.error(f"Resposta da API OSRM não contém '{matriz_key}'.")
-            return None
+                # Combina os índices dos dois lotes e remove duplicatas para a chamada API
+                combined_indices = sorted(list(set(batch_origem + batch_destino)))
+                if not combined_indices: continue # Pula se lote combinado for vazio
 
-        # Converte para numpy array, tratando Nones
-        matriz_raw = data[matriz_key]
-        matriz = np.array(matriz_raw, dtype=float) # Usa float para acomodar np.inf
+                # Mapeia índice original para índice dentro do lote combinado
+                original_to_combined = {orig_idx: i for i, orig_idx in enumerate(combined_indices)}
 
-        # Substitui None (ou valores inválidos que o OSRM possa retornar) por INFINITE_VALUE
-        # O OSRM geralmente retorna valores numéricos grandes, mas garantimos a substituição
-        # A API table pode retornar null se não houver rota
-        if None in matriz_raw: # Verifica se houve algum None na resposta original
-             matriz[np.isnan(matriz)] = INFINITE_VALUE # Substitui Nones (que viram NaN) por infinito
-             logging.warning(f"Valores None encontrados na matriz OSRM, substituídos por {INFINITE_VALUE}")
+                # Formata coordenadas para o lote combinado
+                batch_points = [pontos[i] for i in combined_indices]
+                batch_coords_str = ";".join([f"{lon},{lat}" for lat, lon in batch_points])
 
-        # Verifica se a matriz tem a forma esperada
-        if matriz.shape != (n, n):
-            logging.error(f"Erro: Matriz OSRM retornada com forma inesperada {matriz.shape}, esperado ({n},{n})")
-            return None
+                # Faz a chamada GET para o lote combinado
+                partial_matrix_raw = _get_osrm_table_batch(url_base, batch_coords_str, metrica)
 
-        # Garante que a diagonal principal seja 0
-        np.fill_diagonal(matriz, 0)
+                # Preenche a matriz final com os resultados da matriz parcial
+                for i_orig in batch_origem:
+                    for j_dest in batch_destino:
+                        # Encontra os índices correspondentes na matriz parcial
+                        try:
+                            idx_partial_orig = original_to_combined[i_orig]
+                            idx_partial_dest = original_to_combined[j_dest]
 
-        logging.info(f"Matriz de {metrica} ({n}x{n}) calculada com sucesso via OSRM.")
-        # Retorna como inteiro se não houver infinitos, para compatibilidade com OR-Tools
-        if np.all(np.isfinite(matriz)):
-             return matriz.astype(int)
-        else:
-             # Se houver infinitos, pode ser necessário tratar no solver
-             # Por segurança, retornamos como float, mas convertendo infinitos para o valor grande
-             matriz[np.isinf(matriz)] = INFINITE_VALUE
-             return matriz.astype(int)
+                            value = partial_matrix_raw[idx_partial_orig][idx_partial_dest]
 
+                            if value is None:
+                                final_matrix[i_orig, j_dest] = INFINITE_VALUE
+                            elif isinstance(value, (int, float)):
+                                final_matrix[i_orig, j_dest] = int(round(value))
+                            else:
+                                logging.warning(f"Valor inesperado {value} na submatriz para ({i_orig},{j_dest}). Usando {INFINITE_VALUE}.")
+                                final_matrix[i_orig, j_dest] = INFINITE_VALUE
+                        except (KeyError, IndexError) as e:
+                             logging.error(f"Erro ao mapear/acessar índices ({i_orig},{j_dest}) -> ({idx_partial_orig},{idx_partial_dest}) na submatriz: {e}")
+                             final_matrix[i_orig, j_dest] = INFINITE_VALUE # Marca como infinito em caso de erro
+
+        # Verifica se algum valor permaneceu infinito (exceto diagonal) - pode indicar falha parcial
+        if np.any(final_matrix[~np.eye(n, dtype=bool)] == INFINITE_VALUE):
+             logging.warning(f"Matriz final contém valores infinitos ({INFINITE_VALUE}), indicando possíveis falhas em rotas individuais ou lotes.")
+
+        logging.info(f"Matriz de '{metrica}' ({final_matrix.shape}) calculada com sucesso usando lotes.")
+        return final_matrix
+
+    except requests.exceptions.Timeout:
+        logging.error(f"Timeout ao conectar com OSRM API durante processamento em lote.")
+        return None
+    except requests.exceptions.ConnectionError as e:
+        logging.error(f"Erro de conexão com OSRM API durante processamento em lote. Erro: {e}")
+        return None
+    except requests.exceptions.HTTPError as e:
+        status_code = e.response.status_code if e.response is not None else 'N/A'
+        reason = e.response.reason if e.response is not None else 'N/A'
+        logging.error(f"Erro HTTP do OSRM API durante processamento em lote: {status_code} - {reason}.")
+        try:
+            if e.response is not None:
+                 logging.error(f"Corpo da resposta OSRM (erro lote): {e.response.text[:500]}")
+        except Exception:
+            pass
+        return None
     except requests.exceptions.RequestException as e:
-        logging.error(f"Erro de conexão/requisição ao servidor OSRM: {e}")
+        logging.error(f"Erro genérico de requisição ao OSRM API durante processamento em lote: {e}.")
+        return None
+    except ValueError as e: # Erro JSON ou erro levantado por _get_osrm_table_batch
+        logging.error(f"Erro ao processar resposta OSRM em lote: {e}")
         return None
     except Exception as e:
-        logging.error(f"Erro inesperado ao calcular matriz de distâncias: {e}")
+        logging.error(f"Erro inesperado durante cálculo da matriz OSRM em lote: {e}")
+        logging.error(traceback.format_exc())
         return None
 
 

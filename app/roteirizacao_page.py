@@ -214,7 +214,8 @@ def show():
                 # Calcular Matriz de Distâncias (necessária para VRP, CVRP, TSP e cálculo final de distância)
                 with st.spinner("Calculando matriz de distâncias..."):
                     try:
-                        matriz_distancias = calcular_matriz_distancias(all_locations, metric='distance')
+                        # CORREÇÃO: Usar 'metrica' em vez de 'metric'
+                        matriz_distancias = calcular_matriz_distancias(all_locations, metrica='distance')
                         if matriz_distancias is None or len(matriz_distancias) != len(all_locations):
                              st.error("Falha ao calcular a matriz de distâncias completa.")
                              matriz_distancias = None # Garante que não prossiga se falhar
@@ -228,8 +229,9 @@ def show():
                 if tipo == "VRPTW":
                     with st.spinner("Calculando matriz de tempos..."):
                         try:
+                            # CORREÇÃO: Usar 'metrica' em vez de 'metric'
                             # Usar 'duration' para obter tempos em segundos
-                            matriz_tempos = calcular_matriz_distancias(all_locations, metric='duration')
+                            matriz_tempos = calcular_matriz_distancias(all_locations, metrica='duration')
                             if matriz_tempos is None or len(matriz_tempos) != len(all_locations):
                                 st.error("Falha ao calcular a matriz de tempos completa.")
                                 matriz_tempos = None
