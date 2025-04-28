@@ -15,4 +15,4 @@ python-dotenv
 streamlit-folium
 streamlit-option-menu
 streamlit-aggrid
-streamlit-lottie 
+streamlit-lottie
