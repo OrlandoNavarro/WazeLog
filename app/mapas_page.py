@@ -95,9 +95,9 @@ def show():
             {
                 'Data': c['data'],
                 'Tipo': c['tipo'],
-                'Pedidos': c['qtd_pedidos'],
-                'Veículos': c['qtd_veiculos'],
-                'Distância Total': c['distancia_total']
+                'Pedidos': c.get('qtd_pedidos', ''),
+                'Veículos': c.get('qtd_veiculos', ''),
+                'Distância Total': c.get('distancia_total', '')
             }
             for c in st.session_state.cenarios_roteirizacao
         ])
@@ -110,6 +110,26 @@ def show():
             if 'Latitude' in rota_veic.columns and 'Longitude' in rota_veic.columns:
                 st.map(rota_veic.rename(columns={'Latitude': 'latitude', 'Longitude': 'longitude'}).dropna(subset=['latitude', 'longitude']))
                 st.dataframe(rota_veic, use_container_width=True)
+                # --- KPIs do veículo selecionado ---
+                from database import carregar_frota
+                frota_df = carregar_frota()
+                capacidade_kg = None
+                if 'Placa' in frota_df.columns and 'Capacidade (Kg)' in frota_df.columns:
+                    cap_row = frota_df[frota_df['Placa'] == placa_sel]
+                    if not cap_row.empty:
+                        capacidade_kg = cap_row.iloc[0]['Capacidade (Kg)']
+                peso_total = rota_veic['Peso dos Itens'].sum() if 'Peso dos Itens' in rota_veic.columns else None
+                qtd_entregas = len(rota_veic)
+                colk1, colk2 = st.columns(2)
+                with colk1:
+                    st.markdown(f'<div class="kpi-card"><span class="kpi-icon">🚚</span><div><b>Placa</b><br><span style="font-size:1.3rem">{placa_sel}</span></div></div>', unsafe_allow_html=True)
+                with colk2:
+                    st.markdown(f'<div class="kpi-card"><span class="kpi-icon">🚛</span><div><b>Capacidade do Veículo</b><br><span style="font-size:1.3rem">{capacidade_kg if capacidade_kg is not None else "-"} Kg</span></div></div>', unsafe_allow_html=True)
+                colk3, colk4 = st.columns(2)
+                with colk3:
+                    st.markdown(f'<div class="kpi-card"><span class="kpi-icon">📦</span><div><b>Entregas</b><br><span style="font-size:1.3rem">{qtd_entregas}</span></div></div>', unsafe_allow_html=True)
+                with colk4:
+                    st.markdown(f'<div class="kpi-card"><span class="kpi-icon">⚖️</span><div><b>Peso Total no Veículo</b><br><span style="font-size:1.3rem">{peso_total:,.0f} Kg</span></div></div>', unsafe_allow_html=True)
             else:
                 st.warning("Não há coordenadas suficientes para exibir a rota no mapa.")
         else:

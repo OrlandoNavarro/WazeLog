@@ -1,6 +1,9 @@
 import sys
 import os
 import streamlit as st
+import pandas as pd
+import requests
+sys.dont_write_bytecode = True
 
 st.set_page_config(page_title="Wazelog", layout="wide")
 
