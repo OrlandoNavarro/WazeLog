@@ -1,0 +1,36 @@
+# /workspaces/WazeLog/routing/osrm_local/docker-compose.yml
+version: '3.8'
+
+services:
+  osrm-backend:
+    image: osrm/osrm-backend:latest
+    container_name: osrm_backend_brazil
+    restart: unless-stopped
+    ports:
+      - "5000:5000" # Mapeia a porta 5000 do container para a porta 5000 do host
+    volumes:
+      - ./data:/data # Mapeia a pasta local 'data' para '/data' dentro do container
+    command: osrm-routed --algorithm mld /data/brazil-latest.osrm # Comando para iniciar o servidor com os dados processados
+
+  # Serviço temporário para processar os dados do mapa (executa apenas uma vez)
+  osrm-preprocess:
+    image: osrm/osrm-backend:latest
+    container_name: osrm_preprocess_brazil
+    volumes:
+      - ./data:/data
+    # Sequência de comandos para processar o arquivo .osm.pbf
+    # 1. Extrair a rede de estradas para carros
+    # 2. Particionar a rede (necessário para o algoritmo MLD)
+    # 3. Customizar os dados particionados
+    # O resultado será o arquivo brazil-latest.osrm e outros auxiliares na pasta ./data
+    command: >
+      bash -c "
+      echo '--- Iniciando pré-processamento OSRM para Brazil ---' &&
+      osrm-extract -p /opt/car.lua /data/brazil-latest.osm.pbf &&
+      echo '--- Extração concluída ---' &&
+      osrm-partition /data/brazil-latest.osrm &&
+      echo '--- Particionamento concluído ---' &&
+      osrm-customize /data/brazil-latest.osrm &&
+      echo '--- Customização concluída ---' &&
+      echo '--- Pré-processamento OSRM concluído com sucesso! ---'
+      "
