@@ -26,14 +26,42 @@ Wazelog é uma plataforma moderna para roteirização inteligente de entregas, c
 
 ## 🏁 Como iniciar o projeto
 
-### 1. Inicie o backend FastAPI
+### 1. (Opcional, mas recomendado) Inicie o Servidor OSRM Local com Docker
+Para evitar limites e timeouts do servidor público do OSRM, você pode rodar uma instância local usando Docker. Isso requer o download dos dados do mapa (ex: Brasil) e um pré-processamento inicial que pode demorar.
+
+   a. Navegue até o diretório de configuração do OSRM local:
+      ```bash
+      cd /workspaces/WazeLog/routing/osrm_local/
+      ```
+   b. Inicie os serviços Docker Compose:
+      ```bash
+      docker-compose up
+      ```
+      Alternativamente, você pode executar os dois passos em um único comando:
+      ```bash
+      cd /workspaces/WazeLog/routing/osrm_local/ && docker-compose up
+      ```
+   c. **Aguarde o Pré-processamento:** Na primeira execução, o Docker baixará a imagem do OSRM e iniciará o pré-processamento dos dados do mapa (`brazil-latest.osm.pbf`). **Este passo pode levar bastante tempo (vários minutos a mais de uma hora)**. Aguarde até ver a mensagem "--- Pré-processamento OSRM concluído com sucesso! ---" no terminal. O container `osrm_preprocess_brazil` deve parar após o sucesso.
+   d. **Servidor Rodando:** Após o pré-processamento, o container `osrm_backend_brazil` iniciará automaticamente e ficará escutando na porta `5000`. O código Python já está configurado para usar `http://localhost:5000` quando este servidor estiver ativo.
+   e. Para rodar o servidor em background nas próximas vezes (após o pré-processamento inicial):
+      ```bash
+      # Dentro de /workspaces/WazeLog/routing/osrm_local/
+      docker-compose up -d osrm-backend
+      ```
+   f. Para parar o servidor:
+      ```bash
+      # Dentro de /workspaces/WazeLog/routing/osrm_local/
+      docker-compose down
+      ```
+
+### 2. Inicie o backend FastAPI
 ```bash
 uvicorn main:app --reload
 python - m uvicorn main:app --reload
 ```
 Acesse: http://localhost:8000
 
-### 2. Inicie o frontend Streamlit
+### 3. Inicie o frontend Streamlit
 ```bash
 streamlit run app/app.py
 python -m streamlit run app/app.py
@@ -58,3 +86,5 @@ Pull requests são bem-vindos! Para grandes mudanças, abra uma issue primeiro p
 
 ---
 Desenvolvido por Orlando e colaboradores.
+Agradecemos a todos os contribuidores e usuários que tornam o Wazelog uma ferramenta melhor a cada dia! 🚀
+```
