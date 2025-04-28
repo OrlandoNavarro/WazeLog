@@ -379,7 +379,32 @@ def show():
                     # Processamento dos resultados (fora do spinner)
                     if rotas_df is not None and not rotas_df.empty:
                         st.success(f"Rotas calculadas com sucesso usando {tipo}! Status: {status_solver}")
-                        with st.expander("Visualizar Tabela de Rotas Geradas", expanded=True):
+
+                        # <<< ADICIONAR COORDENADAS AO rotas_df ANTES DE EXIBIR/SALVAR >>>
+                        if 'Pedido_Index_DF' in rotas_df.columns and not pedidos_validos.empty:
+                            try:
+                                # Garante que o índice de pedidos_validos seja o padrão para merge
+                                pedidos_coords = pedidos_validos.reset_index().rename(columns={'index': 'Original_Index'})
+                                # Seleciona apenas as colunas necessárias para o merge
+                                coords_to_merge = pedidos_coords[['Original_Index', 'Latitude', 'Longitude']].copy()
+                                # Renomeia a coluna de índice para corresponder a 'Pedido_Index_DF'
+                                coords_to_merge = coords_to_merge.rename(columns={'Original_Index': 'Pedido_Index_DF'})
+
+                                # Faz o merge para adicionar Lat/Lon ao df_rotas
+                                rotas_df = pd.merge(
+                                    rotas_df,
+                                    coords_to_merge,
+                                    on='Pedido_Index_DF',
+                                    how='left' # Mantém todas as rotas, mesmo se o merge falhar para alguma
+                                )
+                                st.info("Coordenadas adicionadas ao DataFrame de rotas.")
+                            except Exception as merge_err:
+                                st.warning(f"Não foi possível adicionar coordenadas ao DataFrame de rotas: {merge_err}")
+                        else:
+                             st.warning("Não foi possível adicionar coordenadas ao DataFrame de rotas (coluna 'Pedido_Index_DF' ou 'pedidos_validos' ausente/vazio).")
+
+
+                        with st.expander("Visualizar Tabela de Rotas Geradas (com Coordenadas)", expanded=True):
                             st.dataframe(rotas_df, use_container_width=True)
 
                         # --- Calcular Distância Total Real ---
@@ -414,26 +439,25 @@ def show():
                              st.warning("Matriz de distâncias ou colunas necessárias não disponíveis para calcular a distância total real.")
                              distancia_total_real = None # Não foi possível calcular
 
-                        # Salvar cenário no histórico
+                        # Salvar cenário no histórico (agora rotas_df tem Lat/Lon se o merge funcionou)
                         cenario = {
                             'data': pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S'),
                             'tipo': tipo,
-                            'rotas': rotas_df, # Dataframe completo das rotas
+                            'rotas': rotas_df, # Dataframe completo das rotas com coordenadas
                             'qtd_pedidos_roteirizados': len(pedidos_validos),
                             'qtd_veiculos_disponiveis': len(frota),
-                            'distancia_total': distancia_total_real, # Distância real calculada
-                            'custo_solver': resultado_solver.get('total_distance') if tipo == "VRPTW" and resultado_solver else None, # Custo otimizado pelo solver (tempo para VRPTW)
-                            'tempo_solver': resultado_solver.get('total_time') if tipo == "VRPTW" and resultado_solver else None, # Tempo acumulado pelo solver (VRPTW)
+                            'distancia_total': distancia_total_real,
+                            'custo_solver': resultado_solver.get('total_distance') if tipo == "VRPTW" and resultado_solver else None,
+                            'tempo_solver': resultado_solver.get('total_time') if tipo == "VRPTW" and resultado_solver else None,
                             'status_solver': status_solver,
                             'endereco_partida': endereco_partida,
                             'lat_partida': lat_partida,
                             'lon_partida': lon_partida,
-                            'pedidos_nao_alocados': pedidos_nao_alocados # Dataframe dos não alocados
+                            'pedidos_nao_alocados': pedidos_nao_alocados
                         }
                         st.session_state.cenarios_roteirizacao.insert(0, cenario) # Adiciona no início
-                    elif matriz_ok: # Só mostra erro se a matriz estava ok mas as rotas falharam
-                        st.error(f"Não foi possível gerar rotas válidas com o solver {tipo}. Status: {status_solver}. Verifique os dados de entrada, logs e as configurações do solver.")
-                else: # Fim do if matriz_ok
+                    # ... (restante do código) ...
+                    else: # Fim do if matriz_ok
                      st.error("Não foi possível calcular as matrizes necessárias (distâncias e/ou tempos). Verifique os erros acima.")
 
 
