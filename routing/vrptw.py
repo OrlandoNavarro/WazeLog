@@ -1,158 +1,253 @@
-def solver_vrptw(pedidos, frota, matriz_distancias, default_service_time=15, default_time_window=(480, 1080)):
-    """VRP with Time Windows: adiciona restrições de janelas de tempo para entregas em cada parada."""
-    import pandas as pd
-    from ortools.constraint_solver import pywrapcp, routing_enums_pb2
-    import numpy as np
+import pandas as pd
+from ortools.constraint_solver import pywrapcp, routing_enums_pb2
+import numpy as np
 
-    if pedidos.empty or frota.empty:
-        return None
+def solver_vrptw(data: dict):
+    """
+    Resolve o Problema de Roteamento de Veículos com Janelas de Tempo (VRPTW)
+    usando Google OR-Tools.
 
-    pedidos = pedidos.copy().reset_index(drop=True)
-    frota = frota.copy().reset_index(drop=True)
-    n_pedidos = len(pedidos)
-    n_veiculos = len(frota)
+    Args:
+        data (dict): Um dicionário contendo todos os dados necessários:
+            'time_matrix': Matriz de tempos de viagem (em segundos) entre locais (incluindo depósito).
+            'time_windows': Lista de tuplas (start_sec, end_sec) para cada local (depósito + clientes).
+            'num_vehicles': Número de veículos disponíveis.
+            'depot': Índice do depósito (geralmente 0).
+            'demands': Lista de demandas para cada local (depósito tem demanda 0).
+            'vehicle_capacities': Lista de capacidades para cada veículo.
+            'service_times': Lista de tempos de serviço (em segundos) para cada local.
+            'vehicle_time_windows': Lista de tuplas (start_sec, end_sec) para a operação de cada veículo.
+            'pedidos_df': DataFrame original dos pedidos para referência (opcional, para enriquecer o resultado).
+            'frota_df': DataFrame original da frota para referência (opcional, para enriquecer o resultado).
 
-    # Matriz de distâncias: adicionar depósito (linha/coluna 0)
-    n = len(matriz_distancias)
-    depot_matrix = np.zeros((n + 1, n + 1), dtype=int)
-    depot_matrix[1:, 1:] = matriz_distancias
-    distance_matrix = depot_matrix.tolist()
+    Returns:
+        dict: Um dicionário contendo:
+            'rotas': DataFrame com as rotas detalhadas (ou None se não houver solução).
+            'total_distance': Distância total percorrida (calculada usando time_matrix como custo, pode representar tempo).
+            'total_time': Tempo total acumulado nas rotas (considerando janelas e serviço).
+            'status': Status da solução do OR-Tools.
+        Ou None se a entrada for inválida.
+    """
+    try:
+        # Validação básica dos dados de entrada
+        required_keys = ['time_matrix', 'time_windows', 'num_vehicles', 'depot',
+                         'demands', 'vehicle_capacities', 'service_times', 'vehicle_time_windows']
+        if not all(key in data for key in required_keys):
+            print("Erro: Dados de entrada incompletos para solver_vrptw.")
+            return None
 
-    # Janelas de tempo (usando default)
-    # Depósito: 24h
-    # Pedidos: default_time_window (ex: 8h às 18h -> 480 a 1080 min)
-    time_windows = [(0, 1440)] + [default_time_window] * n_pedidos
+        time_matrix = data['time_matrix']
+        time_windows = data['time_windows']
+        num_vehicles = data['num_vehicles']
+        depot_index = data['depot']
+        demands = data['demands']
+        vehicle_capacities = data['vehicle_capacities']
+        service_times = data['service_times']
+        vehicle_time_windows = data['vehicle_time_windows']
+        pedidos_df = data.get('pedidos_df') # Opcional
+        frota_df = data.get('frota_df')     # Opcional
 
-    # Tempo de serviço (descarga) - usando default
-    service_times = [0] + [default_service_time] * n_pedidos
+        num_locations = len(time_matrix)
+        if not num_locations == len(time_windows) == len(demands) == len(service_times):
+             print("Erro: Inconsistência nos tamanhos das listas de dados (matriz, janelas, demandas, serviço).")
+             return None
+        if not num_vehicles == len(vehicle_capacities) == len(vehicle_time_windows):
+             print("Erro: Inconsistência nos tamanhos das listas de veículos (capacidade, janelas).")
+             return None
+        if num_vehicles == 0:
+             print("Erro: Nenhum veículo disponível.")
+             return None
 
-    # OR-Tools setup
-    manager = pywrapcp.RoutingIndexManager(len(distance_matrix), n_veiculos, 0)
-    routing = pywrapcp.RoutingModel(manager)
+        # --- Configuração OR-Tools ---
+        manager = pywrapcp.RoutingIndexManager(num_locations, num_vehicles, depot_index)
+        routing = pywrapcp.RoutingModel(manager)
 
-    # Callback de Distância/Tempo de Viagem
-    def distance_callback(from_index, to_index):
-        from_node = manager.IndexToNode(from_index)
-        to_node = manager.IndexToNode(to_index)
-        # Tempo de viagem = distância (assumindo velocidade constante, ou matriz já em tempo)
-        # Se a matriz for de distância, pode ser necessário converter para tempo
-        return distance_matrix[from_node][to_node]
+        # --- Dimensão de Capacidade (Demanda) ---
+        def demand_callback(from_index):
+            from_node = manager.IndexToNode(from_index)
+            return demands[from_node]
 
-    transit_callback_index = routing.RegisterTransitCallback(distance_callback)
-    routing.SetArcCostEvaluatorOfAllVehicles(transit_callback_index)
+        demand_callback_index = routing.RegisterUnaryTransitCallback(demand_callback)
+        routing.AddDimensionWithVehicleCapacity(
+            demand_callback_index,
+            0,  # null capacity slack
+            vehicle_capacities,  # vehicle maximum capacities
+            True,  # start cumul to zero
+            'Capacity'
+        )
+        capacity_dimension = routing.GetDimensionOrDie('Capacity')
 
-    # Callback de Tempo Total (Viagem + Serviço)
-    def time_callback(from_index, to_index):
-        from_node = manager.IndexToNode(from_index)
-        to_node = manager.IndexToNode(to_index)
-        travel_time = distance_matrix[from_node][to_node]
-        service_time = service_times[from_node] # Tempo de serviço no nó de origem
-        return travel_time + service_time
+        # --- Dimensão de Tempo ---
+        def time_callback(from_index, to_index):
+            from_node = manager.IndexToNode(from_index)
+            to_node = manager.IndexToNode(to_index)
+            # Tempo = Tempo de Viagem + Tempo de Serviço no nó de ORIGEM
+            # O tempo de serviço é considerado ao *chegar* no nó, antes de sair para o próximo.
+            travel_time = time_matrix[from_node][to_node] if from_node < len(time_matrix) and to_node < len(time_matrix[from_node]) else 0
+            service_time = service_times[from_node] if from_node < len(service_times) else 0
+            return int(travel_time + service_time) # OR-Tools espera inteiros
 
-    time_callback_index = routing.RegisterTransitCallback(time_callback)
+        time_callback_index = routing.RegisterTransitCallback(time_callback)
 
-    # Adicionando Dimensão de Tempo
-    horizon = 1440 # Horizonte de 24 horas em minutos
-    routing.AddDimension(
-        time_callback_index,
-        horizon,  # slack_max: permitir espera máxima igual ao horizonte
-        horizon,  # capacity: tempo máximo por veículo
-        True,     # fix_start_cumul_to_zero: começar no tempo 0 no depósito
-        'Time'
-    )
-    time_dimension = routing.GetDimensionOrDie('Time')
+        # Custo do Arco = Tempo de Viagem (queremos minimizar o tempo total)
+        routing.SetArcCostEvaluatorOfAllVehicles(time_callback_index)
 
-    # Aplicando Janelas de Tempo
-    for location_idx, (open_time, close_time) in enumerate(time_windows):
-        if location_idx == 0: # Depósito
-            continue # Janela do depósito já coberta pelo horizonte da dimensão
-        index = manager.NodeToIndex(location_idx)
-        time_dimension.CumulVar(index).SetRange(open_time, close_time)
+        # Adicionando a dimensão de tempo
+        horizon = 86400 # Horizonte máximo de 24 horas em segundos
+        routing.AddDimension(
+            time_callback_index,
+            horizon,  # slack_max: tempo máximo de espera permitido em um nó
+            horizon,  # capacity: tempo máximo total por veículo
+            False,    # fix_start_cumul_to_zero: NÃO fixar em zero, pois a janela do veículo pode começar mais tarde
+            'Time'
+        )
+        time_dimension = routing.GetDimensionOrDie('Time')
 
-    # Adicionando janelas de tempo para início/fim dos veículos (opcional)
-    # for vehicle_id in range(n_veiculos):
-    #     index = routing.Start(vehicle_id)
-    #     time_dimension.CumulVar(index).SetRange(start_time, end_time)
-    #     index = routing.End(vehicle_id)
-    #     time_dimension.CumulVar(index).SetRange(start_time, end_time)
+        # Aplicando Janelas de Tempo dos Clientes e Depósito
+        for location_idx, time_window in enumerate(time_windows):
+            if location_idx == depot_index: # Janela do depósito é tratada pelas janelas dos veículos
+                continue
+            index = manager.NodeToIndex(location_idx)
+            start_time = int(time_window[0])
+            end_time = int(time_window[1])
+            time_dimension.CumulVar(index).SetRange(start_time, end_time)
 
-    # Busca
-    search_parameters = pywrapcp.DefaultRoutingSearchParameters()
-    search_parameters.first_solution_strategy = (
-        routing_enums_pb2.FirstSolutionStrategy.PATH_CHEAPEST_ARC
-    )
-    # search_parameters.local_search_metaheuristic = (
-    #     routing_enums_pb2.LocalSearchMetaheuristic.GUIDED_LOCAL_SEARCH)
-    # search_parameters.time_limit.seconds = 30
+        # Aplicando Janelas de Tempo dos Veículos
+        for vehicle_id in range(num_vehicles):
+            index_start = routing.Start(vehicle_id)
+            index_end = routing.End(vehicle_id)
+            start_time = int(vehicle_time_windows[vehicle_id][0])
+            end_time = int(vehicle_time_windows[vehicle_id][1])
+            time_dimension.CumulVar(index_start).SetRange(start_time, end_time)
+            time_dimension.CumulVar(index_end).SetRange(start_time, end_time)
 
-    solution = routing.SolveWithParameters(search_parameters)
+        # Permitir que veículos "dropem" visitas se não for possível atender (opcional, adiciona penalidade)
+        # for node in range(1, num_locations): # Exclui o depósito
+        #     routing.AddDisjunction([manager.NodeToIndex(node)], 100000) # Penalidade alta
 
-    # Monta resultado
-    pedidos['Veículo'] = None
-    pedidos['distancia_prox'] = 0 # Distância para o próximo ponto na rota
-    pedidos['tempo_chegada'] = pd.NaT
-    pedidos['tempo_saida'] = pd.NaT
+        # --- Resolução ---
+        search_parameters = pywrapcp.DefaultRoutingSearchParameters()
+        search_parameters.first_solution_strategy = (
+            routing_enums_pb2.FirstSolutionStrategy.PARALLEL_CHEAPEST_INSERTION # Boa estratégia para TW
+        )
+        search_parameters.local_search_metaheuristic = (
+             routing_enums_pb2.LocalSearchMetaheuristic.GUIDED_LOCAL_SEARCH
+        )
+        search_parameters.time_limit.FromSeconds(30) # Limite de tempo
+        # search_parameters.log_search = True # Para depuração
 
-    if solution:
-        routes = []
-        total_distance = 0
-        total_time = 0
-        for vehicle_id in range(n_veiculos):
-            route_for_vehicle = []
-            index = routing.Start(vehicle_id)
-            route_distance = 0
-            route_time = 0
-            while not routing.IsEnd(index):
-                node_index = manager.IndexToNode(index)
-                next_index = solution.Value(routing.NextVar(index))
-                next_node_index = manager.IndexToNode(next_index)
+        solution = routing.SolveWithParameters(search_parameters)
+        status = routing.status()
+        status_str = routing.solver().StatusString(status)
 
-                # Informações do nó atual
-                arrival_time = solution.Min(time_dimension.CumulVar(index))
-                departure_time = solution.Max(time_dimension.CumulVar(index))
-                service_time_at_node = service_times[node_index]
-                # Ajuste para garantir que saída >= chegada + serviço
-                departure_time = max(arrival_time + service_time_at_node, departure_time)
 
-                # Adiciona ao resultado do DataFrame (se não for depósito)
-                if node_index != 0:
-                    pedido_idx = node_index - 1
-                    if pedido_idx < len(pedidos):
-                        if pd.isnull(pedidos.at[pedido_idx, 'Veículo']):
-                            pedidos.at[pedido_idx, 'Veículo'] = (
-                                frota['ID Veículo'].iloc[vehicle_id]
-                                if 'ID Veículo' in frota.columns else
-                                frota['Placa'].iloc[vehicle_id] if 'Placa' in frota.columns else f'veiculo_{vehicle_id+1}'
-                            )
-                        # Distância/Tempo para o próximo nó
-                        dist_to_next = routing.GetArcCostForVehicle(index, next_index, vehicle_id)
-                        pedidos.at[pedido_idx, 'distancia_prox'] = dist_to_next
-                        pedidos.at[pedido_idx, 'tempo_chegada'] = arrival_time
-                        pedidos.at[pedido_idx, 'tempo_saida'] = departure_time
-                        route_for_vehicle.append({
-                            'node': node_index,
-                            'pedido_idx': pedido_idx,
-                            'arrival': arrival_time,
-                            'departure': departure_time
+        # --- Processamento da Solução ---
+        if solution:
+            routes_data = []
+            total_distance = 0 # Usaremos a time_matrix como "distância" aqui, pois é o custo otimizado
+            total_time = 0     # Tempo total considerando serviço e janelas
+
+            for vehicle_id in range(num_vehicles):
+                index = routing.Start(vehicle_id)
+                route_distance = 0
+                vehicle_used = False
+                sequence = 0
+                placa_veiculo = frota_df['Placa'].iloc[vehicle_id] if frota_df is not None and 'Placa' in frota_df.columns and vehicle_id < len(frota_df) else f'Veiculo_{vehicle_id+1}'
+
+                while not routing.IsEnd(index):
+                    node_index = manager.IndexToNode(index)
+                    next_index = solution.Value(routing.NextVar(index))
+                    next_node_index = manager.IndexToNode(next_index)
+
+                    # Ignora o depósito no início da rota para a tabela de resultados
+                    if node_index != depot_index:
+                        vehicle_used = True
+                        pedido_original_index = node_index - 1 # Ajusta para índice do DataFrame de pedidos
+                        arrival_time_sec = solution.Min(time_dimension.CumulVar(index))
+                        departure_time_sec = solution.Max(time_dimension.CumulVar(index))
+                        # Garante que departure >= arrival + service
+                        service_time_at_node = service_times[node_index] if node_index < len(service_times) else 0
+                        departure_time_sec = max(arrival_time_sec + service_time_at_node, departure_time_sec)
+
+                        # Tempo de viagem do nó anterior para este
+                        # Precisa encontrar o índice anterior na solução
+                        previous_index = index # Placeholder, precisa da lógica correta se necessário
+                        # travel_time_to_node = time_matrix[manager.IndexToNode(previous_index)][node_index]
+
+                        # Distância/Custo do arco atual para o próximo
+                        arc_cost = routing.GetArcCostForVehicle(index, next_index, vehicle_id)
+                        route_distance += arc_cost # Acumula o custo (tempo de viagem + serviço no nó de origem)
+
+                        # Dados do pedido original (se disponível)
+                        cliente_nome = pedidos_df['Nome Cliente'].iloc[pedido_original_index] if pedidos_df is not None and pedido_original_index < len(pedidos_df) else f'Cliente_{node_index}'
+                        endereco = pedidos_df['Endereço Completo'].iloc[pedido_original_index] if pedidos_df is not None and pedido_original_index < len(pedidos_df) else f'Endereco_{node_index}'
+
+                        routes_data.append({
+                            'Veículo': placa_veiculo,
+                            'Sequencia': sequence,
+                            'Node_Index_OR': node_index, # Índice usado pelo OR-Tools
+                            'Pedido_Index_DF': pedido_original_index, # Índice no DataFrame original
+                            'Cliente': cliente_nome,
+                            'Endereco': endereco,
+                            'Demanda': demands[node_index],
+                            'Janela_Inicio_Sec': time_windows[node_index][0] if node_index < len(time_windows) else None,
+                            'Janela_Fim_Sec': time_windows[node_index][1] if node_index < len(time_windows) else None,
+                            'Tempo_Servico_Sec': service_times[node_index] if node_index < len(service_times) else 0,
+                            'Chegada_Estimada_Sec': arrival_time_sec,
+                            'Saida_Estimada_Sec': departure_time_sec,
+                            'Custo_Arco_Saida': arc_cost # Custo (tempo) para ir deste nó para o próximo
                         })
+                        sequence += 1
 
-                # Atualiza distância e tempo da rota
-                route_distance += routing.GetArcCostForVehicle(index, next_index, vehicle_id)
-                index = next_index
+                    # Atualiza o índice
+                    index = next_index
 
-            # Adiciona informações do fim da rota (depósito)
-            node_index = manager.IndexToNode(index)
-            arrival_time = solution.Min(time_dimension.CumulVar(index))
-            route_for_vehicle.append({'node': node_index, 'arrival': arrival_time, 'departure': arrival_time})
+                # Adiciona custo do último nó de cliente para o depósito final
+                if vehicle_used:
+                     # O route_distance já acumulou os custos dos arcos Start->N1, N1->N2, ..., Nk->End
+                     # O custo total da rota é o valor acumulado no nó final
+                     route_total_time = solution.Min(time_dimension.CumulVar(routing.End(vehicle_id)))
+                     total_time += route_total_time
+                     # A distância total é a soma dos custos dos arcos (que representam tempo aqui)
+                     total_distance += route_distance
 
-            routes.append(route_for_vehicle)
-            total_distance += route_distance
-            total_time += solution.Min(time_dimension.CumulVar(routing.End(vehicle_id)))
 
-        # Você pode retornar mais informações se precisar
-        # return {'pedidos': pedidos, 'routes': routes, 'total_distance': total_distance, 'total_time': total_time}
-        return pedidos
-    else:
-        print('Nenhuma solução encontrada!')
+            df_rotas = pd.DataFrame(routes_data)
+            # Converter tempos de segundos para formato mais legível, se desejado
+            # df_rotas['Chegada_Estimada'] = pd.to_timedelta(df_rotas['Chegada_Estimada_Sec'], unit='s')
+            # df_rotas['Saida_Estimada'] = pd.to_timedelta(df_rotas['Saida_Estimada_Sec'], unit='s')
+
+            return {
+                'rotas': df_rotas,
+                'total_distance': total_distance, # Na verdade, é o custo total (tempo)
+                'total_time': total_time,         # Tempo acumulado nas dimensões
+                'status': status_str
+            }
+        else:
+            print(f'Nenhuma solução encontrada! Status: {status_str}')
+            return {
+                 'rotas': pd.DataFrame(),
+                 'total_distance': 0,
+                 'total_time': 0,
+                 'status': status_str
+            }
+
+    except Exception as e:
+        print(f"Erro inesperado no solver_vrptw: {e}")
+        import traceback
+        traceback.print_exc()
         return None
+
+# Exemplo de como chamar (apenas para ilustração, não executa aqui)
+# if __name__ == '__main__':
+#     # Montar um dicionário 'data' de exemplo aqui
+#     data_exemplo = { ... }
+#     resultado = solver_vrptw(data_exemplo)
+#     if resultado and not resultado['rotas'].empty:
+#         print("Rotas encontradas:")
+#         print(resultado['rotas'])
+#         print(f"Custo/Distância Total: {resultado['total_distance']}")
+#         print(f"Tempo Total: {resultado['total_time']}")
+#     else:
+#         print("Não foi possível encontrar rotas.")
 
