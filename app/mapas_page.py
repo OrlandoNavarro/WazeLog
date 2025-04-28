@@ -288,7 +288,7 @@ def show():
     # Exibe o mapa
     try:
         # <<< Ajustar tamanho do mapa >>>
-        st_folium(m, key="mapa_pedidos_cluster", use_container_width=True, height=600, returned_objects=[]) # Usa largura do container e altura 600
+        st_folium(m, key="mapa_pedidos_cluster", use_container_width=True, height=700, returned_objects=[]) # Usa largura do container e altura 600
     except Exception as st_folium_err:
         st.error(f"Erro ao exibir mapa com st_folium: {st_folium_err}")
 
