@@ -1,6 +1,8 @@
+import logging
+import traceback
 import pandas as pd
-from ortools.constraint_solver import pywrapcp, routing_enums_pb2
-import numpy as np
+from ortools.constraint_solver import routing_enums_pb2
+from ortools.constraint_solver import pywrapcp
 
 def solver_vrptw(data: dict):
     """
@@ -138,11 +140,23 @@ def solver_vrptw(data: dict):
 
         solution = routing.SolveWithParameters(search_parameters)
         status = routing.status()
-        status_str = routing.solver().StatusString(status)
+
+        # --- CORREÇÃO AQUI: Mapeamento manual do status numérico para string ---
+        status_map = {
+            pywrapcp.RoutingModel.ROUTING_NOT_SOLVED: 'ROUTING_NOT_SOLVED',
+            pywrapcp.RoutingModel.ROUTING_SUCCESS: 'ROUTING_SUCCESS',
+            pywrapcp.RoutingModel.ROUTING_FAIL: 'ROUTING_FAIL',
+            pywrapcp.RoutingModel.ROUTING_FAIL_TIMEOUT: 'ROUTING_FAIL_TIMEOUT',
+            pywrapcp.RoutingModel.ROUTING_INVALID: 'ROUTING_INVALID',
+        }
+        status_str = status_map.get(status, f'STATUS_DESCONHECIDO_{status}')
+        # --------------------------------------------------------------------
 
 
         # --- Processamento da Solução ---
-        if solution:
+        # Usar as constantes numéricas para a lógica de decisão
+        if solution and status in [pywrapcp.RoutingModel.ROUTING_SUCCESS, pywrapcp.RoutingModel.ROUTING_OPTIMAL, pywrapcp.RoutingModel.ROUTING_FAIL_TIMEOUT]:
+            logging.info(f"Status da solução OR-Tools: {status_str} ({status})")
             routes_data = []
             total_distance = 0 # Usaremos a time_matrix como "distância" aqui, pois é o custo otimizado
             total_time = 0     # Tempo total considerando serviço e janelas
@@ -150,93 +164,107 @@ def solver_vrptw(data: dict):
             for vehicle_id in range(num_vehicles):
                 index = routing.Start(vehicle_id)
                 route_distance = 0
+                route_load = 0 # Carga acumulada no veículo
+                route_nodes = [] # Nós visitados por este veículo
                 vehicle_used = False
                 sequence = 0
                 placa_veiculo = frota_df['Placa'].iloc[vehicle_id] if frota_df is not None and 'Placa' in frota_df.columns and vehicle_id < len(frota_df) else f'Veiculo_{vehicle_id+1}'
 
                 while not routing.IsEnd(index):
                     node_index = manager.IndexToNode(index)
+                    route_nodes.append(node_index) # Adiciona nó à rota do veículo
+                    route_load += demands[node_index] # Acumula demanda
+
                     next_index = solution.Value(routing.NextVar(index))
                     next_node_index = manager.IndexToNode(next_index)
 
                     # Ignora o depósito no início da rota para a tabela de resultados
                     if node_index != depot_index:
                         vehicle_used = True
-                        pedido_original_index = node_index - 1 # Ajusta para índice do DataFrame de pedidos
+                        sequence += 1 # Incrementa sequência apenas para clientes
+                        pedido_original_index = node_index - 1 # Ajusta para índice do DataFrame de pedidos (assumindo que o depósito é 0 e os pedidos começam em 1)
                         arrival_time_sec = solution.Min(time_dimension.CumulVar(index))
                         departure_time_sec = solution.Max(time_dimension.CumulVar(index))
                         # Garante que departure >= arrival + service
                         service_time_at_node = service_times[node_index] if node_index < len(service_times) else 0
-                        departure_time_sec = max(arrival_time_sec + service_time_at_node, departure_time_sec)
+                        # A saída real pode ser mais tarde se houver espera pela janela de tempo
+                        actual_departure_time = max(arrival_time_sec + service_time_at_node, departure_time_sec)
 
-                        # Tempo de viagem do nó anterior para este
-                        # Precisa encontrar o índice anterior na solução
-                        previous_index = index # Placeholder, precisa da lógica correta se necessário
-                        # travel_time_to_node = time_matrix[manager.IndexToNode(previous_index)][node_index]
-
-                        # Distância/Custo do arco atual para o próximo
+                        # Custo do arco atual para o próximo (tempo de viagem + serviço no nó ATUAL)
                         arc_cost = routing.GetArcCostForVehicle(index, next_index, vehicle_id)
                         route_distance += arc_cost # Acumula o custo (tempo de viagem + serviço no nó de origem)
 
                         # Dados do pedido original (se disponível)
-                        cliente_nome = pedidos_df['Nome Cliente'].iloc[pedido_original_index] if pedidos_df is not None and pedido_original_index < len(pedidos_df) else f'Cliente_{node_index}'
-                        endereco = pedidos_df['Endereço Completo'].iloc[pedido_original_index] if pedidos_df is not None and pedido_original_index < len(pedidos_df) else f'Endereco_{node_index}'
+                        cliente_nome = "N/A"
+                        endereco = "N/A"
+                        if pedidos_df is not None and pedido_original_index >= 0 and pedido_original_index < len(pedidos_df):
+                            cliente_nome = pedidos_df['Nome Cliente'].iloc[pedido_original_index]
+                            endereco = pedidos_df['Endereço Completo'].iloc[pedido_original_index]
+                        else:
+                             logging.warning(f"Índice de pedido {pedido_original_index} (Node {node_index}) fora dos limites do DataFrame de pedidos.")
+
 
                         routes_data.append({
                             'Veículo': placa_veiculo,
                             'Sequencia': sequence,
-                            'Node_Index_OR': node_index, # Índice usado pelo OR-Tools
-                            'Pedido_Index_DF': pedido_original_index, # Índice no DataFrame original
+                            'Node_Index_OR': node_index,
+                            'Pedido_Index_DF': pedido_original_index,
                             'Cliente': cliente_nome,
                             'Endereco': endereco,
                             'Demanda': demands[node_index],
                             'Janela_Inicio_Sec': time_windows[node_index][0] if node_index < len(time_windows) else None,
                             'Janela_Fim_Sec': time_windows[node_index][1] if node_index < len(time_windows) else None,
-                            'Tempo_Servico_Sec': service_times[node_index] if node_index < len(service_times) else 0,
+                            'Tempo_Servico_Sec': service_time_at_node,
                             'Chegada_Estimada_Sec': arrival_time_sec,
-                            'Saida_Estimada_Sec': departure_time_sec,
-                            'Custo_Arco_Saida': arc_cost # Custo (tempo) para ir deste nó para o próximo
+                            'Saida_Estimada_Sec': actual_departure_time, # Usar o tempo de saída calculado
+                            'Custo_Arco_Saida': arc_cost, # Custo para ir para o PRÓXIMO nó
+                            'Carga_Acumulada': route_load # Carga após visitar este nó
                         })
-                        sequence += 1
 
-                    # Atualiza o índice
-                    index = next_index
+                    index = next_index # Move para o próximo índice na rota
 
-                # Adiciona custo do último nó de cliente para o depósito final
+                # Adiciona o nó final (depósito) à lista de nós da rota
+                node_index = manager.IndexToNode(index)
+                route_nodes.append(node_index)
+
+                # Adiciona custo do último nó de cliente para o depósito final, se o veículo foi usado
                 if vehicle_used:
-                     # O route_distance já acumulou os custos dos arcos Start->N1, N1->N2, ..., Nk->End
-                     # O custo total da rota é o valor acumulado no nó final
-                     route_total_time = solution.Min(time_dimension.CumulVar(routing.End(vehicle_id)))
-                     total_time += route_total_time
-                     # A distância total é a soma dos custos dos arcos (que representam tempo aqui)
-                     total_distance += route_distance
+                    # O custo já foi acumulado no último arco dentro do loop
+                    total_distance += route_distance # Acumula distância total (baseada em tempo)
+                    # Calcular tempo total da rota para este veículo
+                    start_time_vehicle = solution.Min(time_dimension.CumulVar(routing.Start(vehicle_id)))
+                    end_time_vehicle = solution.Max(time_dimension.CumulVar(routing.End(vehicle_id)))
+                    total_time += (end_time_vehicle - start_time_vehicle) # Acumula tempo total de operação
+                    logging.info(f"Rota para {placa_veiculo}: Carga={route_load}, Dist/Custo={route_distance}, Nós={route_nodes}")
+                else:
+                    logging.info(f"Veículo {placa_veiculo} não utilizado.")
 
+
+            if not routes_data:
+                 logging.warning("Solução encontrada, mas nenhuma rota válida foi gerada (nenhum cliente visitado?). Verifique as restrições.")
+                 return None, None, status_str
 
             df_rotas = pd.DataFrame(routes_data)
             # Converter tempos de segundos para formato mais legível, se desejado
-            # df_rotas['Chegada_Estimada'] = pd.to_timedelta(df_rotas['Chegada_Estimada_Sec'], unit='s')
-            # df_rotas['Saida_Estimada'] = pd.to_timedelta(df_rotas['Saida_Estimada_Sec'], unit='s')
+            # Exemplo: df_rotas['Chegada_Estimada'] = pd.to_timedelta(df_rotas['Chegada_Estimada_Sec'], unit='s')
 
-            return {
-                'rotas': df_rotas,
-                'total_distance': total_distance, # Na verdade, é o custo total (tempo)
-                'total_time': total_time,         # Tempo acumulado nas dimensões
-                'status': status_str
-            }
+            logging.info(f"Otimização concluída. Distância total (custo tempo): {total_distance}, Tempo total operação: {total_time}")
+            return df_rotas, total_distance, status_str
+
+        # Usar as constantes numéricas para a lógica de decisão
+        elif status == pywrapcp.RoutingModel.ROUTING_FAIL or status == pywrapcp.RoutingModel.ROUTING_INVALID:
+             logging.error(f"Falha na otimização OR-Tools: {status_str} ({status}). Nenhuma solução encontrada.")
+             return None, None, status_str
         else:
-            print(f'Nenhuma solução encontrada! Status: {status_str}')
-            return {
-                 'rotas': pd.DataFrame(),
-                 'total_distance': 0,
-                 'total_time': 0,
-                 'status': status_str
-            }
+             # Outros status como NOT_SOLVED podem ocorrer
+             logging.warning(f"Status inesperado ou não tratado da otimização OR-Tools: {status_str} ({status}).")
+             return None, None, status_str
+
 
     except Exception as e:
-        print(f"Erro inesperado no solver_vrptw: {e}")
-        import traceback
-        traceback.print_exc()
-        return None
+        logging.error(f"Erro inesperado no solver_vrptw: {e}")
+        logging.error(traceback.format_exc()) # Log completo do traceback
+        return None, None, "ERRO_INESPERADO"
 
 # Exemplo de como chamar (apenas para ilustração, não executa aqui)
 # if __name__ == '__main__':

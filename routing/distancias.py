@@ -3,144 +3,167 @@ Cálculo de matriz de distâncias/tempos entre pontos usando OSRM, Mapbox, Googl
 """
 import requests
 import numpy as np
-import logging
-import os
-import traceback
 import time
+import logging
 import json
+import traceback # Adicionado para log de erro completo
 
-# Constantes
-OSRM_SERVER_URL = os.environ.get("OSRM_SERVER_URL", "http://router.project-osrm.org")
-INFINITE_VALUE = 9999999  # Valor alto para representar infinito
+# --- Constantes ---
+OSRM_SERVER_URL = "http://router.project-osrm.org"
+MAX_RETRIES = 3
+# --- AJUSTE AQUI ---
+RETRY_DELAY = 15 # Segundos entre retentativas
+DEFAULT_TIMEOUT = 180 # Timeout para cada requisição OSRM em segundos
+# -------------------
+INFINITE_VALUE = 9999999 # Valor para representar "infinito" ou falha
 
-# Configuração do Logging
+# Configuração do logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-def _get_osrm_table_batch(url_base, batch_coords_str, metrica, timeout=120, max_retries=3, retry_delay=5):
-    """
-    Faz a requisição GET para a OSRM Table API, com retentativas para erros 5xx e log detalhado.
-    """
-    matriz_key = 'distances' if metrica == 'distance' else 'durations'
-    params = {'annotations': metrica}
-    url = url_base + batch_coords_str # A URL completa
+# --- AJUSTE AQUI: Adicionar extra_params=None ---
+def _get_osrm_table_batch(url_base, coords_str, metrica, timeout=DEFAULT_TIMEOUT, extra_params=None):
+    """Faz a requisição OSRM Table API para um lote, com retentativas."""
+    # --- AJUSTE AQUI: Mesclar parâmetros ---
+    params = {"annotations": metrica}
+    if extra_params:
+        params.update(extra_params)
+    # --------------------------------------
+    full_url = f"{url_base}{coords_str}"
+    last_exception = None # Armazena a última exceção para log final
 
-    logging.debug(f"OSRM Request URL (sem params): {url_base}") # Log base
-    logging.debug(f"OSRM Request Coords String: {batch_coords_str}") # Log coordenadas
-    logging.debug(f"OSRM Request Params: {params}") # Log parâmetros
-
-    for attempt in range(max_retries):
+    for attempt in range(1, MAX_RETRIES + 1):
+        response = None # Garante que response esteja definida
         try:
-            # Log da tentativa incluindo a URL completa para facilitar a depuração
-            logging.info(f"Consultando OSRM Table API via GET (Batch - Tentativa {attempt + 1}/{max_retries}): {url}?annotations={metrica} (timeout={timeout}s)")
-            response = requests.get(url, params=params, timeout=timeout)
+            # Log da URL completa apenas na primeira tentativa para reduzir verbosidade
+            # --- AJUSTE AQUI: Incluir params no log da URL ---
+            params_str = "&".join([f"{k}={v}" for k, v in params.items()])
+            log_url = f"{full_url}?{params_str}" if attempt == 1 else f"{url_base}... (params omitidos)"
+            # -------------------------------------------------
+            logging.info(f"Consultando OSRM Table API via GET (Batch - Tentativa {attempt}/{MAX_RETRIES}): {log_url} (timeout={timeout}s)")
+            # --- AJUSTE AQUI: Passar o dicionário 'params' mesclado ---
+            response = requests.get(full_url, params=params, timeout=timeout)
+            # ---------------------------------------------------------
+            response.raise_for_status() # Levanta exceção para status HTTP 4xx/5xx
             logging.info(f"OSRM Status Code (Batch): {response.status_code}")
+            data = response.json()
+            metric_key = f"{metrica}s"
+            if metric_key not in data:
+                logging.error(f"Resposta OSRM não contém a chave esperada '{metric_key}'. Resposta: {data}")
+                return None # Falha, não retenta (erro de formato de resposta)
+            return data[metric_key] # Sucesso! Retorna os dados
 
-            if response.status_code == 200:
-                try:
-                    data = response.json()
-                    if data.get('code') == 'Ok' and matriz_key in data:
-                        return data[matriz_key]
-                    else:
-                        logging.error(f"Resposta OSRM OK, mas dados inválidos ou chave '{matriz_key}' ausente. Resposta: {data}")
-                        return None
-                except json.JSONDecodeError:
-                    logging.error(f"Resposta OSRM 200, mas não é um JSON válido. Resposta: {response.text}")
-                    return None
-
-            elif response.status_code >= 500:
-                logging.warning(f"Erro HTTP {response.status_code} do OSRM API (Tentativa {attempt + 1}/{max_retries}). Coords: {batch_coords_str}. Tentando novamente em {retry_delay}s...")
-                if attempt < max_retries - 1:
-                    time.sleep(retry_delay)
-                else:
-                    logging.error(f"Máximo de retentativas ({max_retries}) atingido para erro {response.status_code}. Coords: {batch_coords_str}")
-                    logging.error(f"Corpo da resposta OSRM (erro lote): {response.text}")
-                    return None
-            # <<< Log específico para erro 400 >>>
-            elif response.status_code == 400:
-                 logging.error(f"Erro HTTP 400 (Bad Request) do OSRM API. Verifique a string de coordenadas e a URL.")
-                 logging.error(f"URL Completa Enviada: {response.request.url}") # Loga a URL exata que foi enviada
-                 logging.error(f"Coordenadas Enviadas: {batch_coords_str}")
-                 logging.error(f"Corpo da Resposta (Erro 400): {response.text}")
-                 return None # Não tenta novamente para erro 400
+        except requests.exceptions.Timeout as e:
+            last_exception = e
+            logging.warning(f"Timeout na requisição OSRM (Tentativa {attempt}/{MAX_RETRIES}): {e}.")
+            if attempt == MAX_RETRIES:
+                logging.error(f"Máximo de retentativas ({MAX_RETRIES}) atingido devido a Timeout.")
             else:
-                logging.error(f"Erro HTTP {response.status_code} inesperado do OSRM API: {response.text}. Coords: {batch_coords_str}")
-                return None # Não tenta novamente para outros erros
+                logging.info(f"Tentando novamente em {RETRY_DELAY}s...")
+                time.sleep(RETRY_DELAY)
 
-        except requests.exceptions.Timeout:
-            logging.warning(f"Timeout ({timeout}s) ao conectar com OSRM API (Tentativa {attempt + 1}/{max_retries}). Coords: {batch_coords_str}. Tentando novamente em {retry_delay}s...")
-            if attempt < max_retries - 1:
-                time.sleep(retry_delay)
-            else:
-                logging.error(f"Máximo de retentativas ({max_retries}) atingido devido a timeouts. Coords: {batch_coords_str}")
-                return None
         except requests.exceptions.RequestException as e:
-            logging.error(f"Erro de requisição ao OSRM API (Tentativa {attempt + 1}/{max_retries}): {e}. Coords: {batch_coords_str}")
-            if attempt < max_retries - 1:
-                time.sleep(retry_delay)
-            else:
-                logging.error(f"Máximo de retentativas ({max_retries}) atingido devido a erros de requisição. Coords: {batch_coords_str}")
-                return None
+            last_exception = e
+            status_code = e.response.status_code if e.response is not None else "N/A"
 
+            # Erro 400 (Bad Request) - Não retentar
+            if e.response is not None and status_code == 400:
+                 logging.error(f"Erro HTTP 400 (Bad Request) do OSRM API. Verifique a string de coordenadas e a URL.")
+                 # Usar e.request.url se disponível para a URL exata enviada
+                 # --- AJUSTE AQUI: Incluir params no log da URL ---
+                 params_str_err = "&".join([f"{k}={v}" for k, v in params.items()])
+                 logging.error(f"URL Enviada (aproximada): {full_url}?{params_str_err}")
+                 # -------------------------------------------------
+                 logging.error(f"Coordenadas Enviadas: {coords_str[:200]}...") # Log truncado
+                 try:
+                     error_body = e.response.json()
+                     logging.error(f"Corpo da Resposta (Erro 400): {error_body}")
+                 except json.JSONDecodeError:
+                     logging.error(f"Corpo da Resposta (Erro 400, não JSON): {e.response.text}")
+                 return None # Falha, não retenta
+
+            # Outros erros HTTP (5xx, etc.) - Retentar
+            logging.warning(f"Erro na requisição OSRM (Tentativa {attempt}/{MAX_RETRIES}): Status={status_code}, Erro={e}.")
+            if attempt == MAX_RETRIES:
+                 logging.error(f"Máximo de retentativas ({MAX_RETRIES}) atingido. Último erro: Status={status_code}, Erro={e}")
+                 # Log do corpo da resposta na falha final, se houver resposta
+                 if e.response is not None:
+                     try:
+                         error_body = e.response.json()
+                         logging.error(f"Corpo da resposta OSRM (falha final): {error_body}")
+                     except json.JSONDecodeError:
+                         logging.error(f"Corpo da resposta OSRM (falha final, não JSON): {e.response.text}")
+            else:
+                 logging.info(f"Tentando novamente em {RETRY_DELAY}s...")
+                 time.sleep(RETRY_DELAY)
+
+        except json.JSONDecodeError as e:
+             last_exception = e
+             logging.warning(f"Erro ao decodificar JSON da resposta OSRM (Tentativa {attempt}/{MAX_RETRIES}): {e}")
+             if response is not None:
+                 logging.error(f"Texto da resposta inválida: {response.text}")
+             if attempt == MAX_RETRIES:
+                 logging.error(f"Máximo de retentativas ({MAX_RETRIES}) atingido após erro de JSON.")
+             else:
+                 logging.info(f"Tentando novamente em {RETRY_DELAY}s...")
+                 time.sleep(RETRY_DELAY)
+
+    # Se o loop terminar (todas as tentativas falharam), retorna None
+    logging.error(f"Falha ao obter dados do OSRM após {MAX_RETRIES} tentativas. Última exceção: {last_exception}")
     return None
 
 # --- Funções de Validação Adicionadas ---
 def _is_valid_coord(value):
-    """Verifica se um valor de coordenada é um float válido."""
-    if value is None: return False
-    try:
-        float(value) # Tenta converter para float
-        return True
-    except (ValueError, TypeError):
-        return False
+    """Verifica se um valor é um número finito (não NaN, não infinito)."""
+    return isinstance(value, (int, float)) and np.isfinite(value)
 
 def _is_valid_lat_lon(lat, lon):
-    """Verifica se lat e lon são números válidos dentro da faixa padrão."""
-    if not _is_valid_coord(lat) or not _is_valid_coord(lon): return False
-    try:
-        lat_f, lon_f = float(lat), float(lon)
-        if not (-90 <= lat_f <= 90): return False
-        if not (-180 <= lon_f <= 180): return False
-        return True
-    except (ValueError, TypeError): # Captura erro se a conversão float falhar aqui também
-        return False
-# -----------------------------------------
+    """Verifica se latitude e longitude são válidas."""
+    return _is_valid_coord(lat) and _is_valid_coord(lon) and -90 <= lat <= 90 and -180 <= lon <= 180
 
-def _validar_coordenadas(lista_pontos):
-    """Valida uma lista de pontos (lat, lon). Usado principalmente em calcular_distancia."""
-    if not lista_pontos:
-        return True # Lista vazia é válida
-    for i, ponto in enumerate(lista_pontos):
-        if not isinstance(ponto, (list, tuple)) or len(ponto) != 2:
-            logging.error(f"Formato inválido para ponto no índice {i}: {ponto}. Esperado (latitude, longitude).")
-            return False
-        lat, lon = ponto
-        if not _is_valid_lat_lon(lat, lon):
-             # Log de erro já acontece em _is_valid_lat_lon se chamado de lá
-             # Adicionamos um log aqui para o contexto da lista
-             logging.error(f"Coordenadas inválidas encontradas na validação da lista no índice {i}: ({lat}, {lon}).")
-             return False
-    return True
+def _validar_coordenadas(pontos_lote):
+    """Valida uma lista de pontos (lat, lon) e retorna os válidos e seus índices originais."""
+    pontos_validos = []
+    indices_validos_no_lote = []
+    for i, (lat, lon) in enumerate(pontos_lote):
+        if _is_valid_lat_lon(lat, lon):
+            pontos_validos.append((lat, lon))
+            indices_validos_no_lote.append(i)
+        else:
+            logging.warning(f"Coordenada inválida no lote: índice {i}, valor ({lat}, {lon}). Será ignorada.")
+    return pontos_validos, indices_validos_no_lote
+# --- Fim Funções de Validação ---
+
 
 def calcular_matriz_distancias(pontos, provider="osrm", metrica="duration", progress_callback=None):
     """
     Calcula a matriz de distâncias ou tempos usando OSRM Table API em lotes,
     validando coordenadas antes de cada requisição.
+
+    Args:
+        pontos (list): Lista de tuplas (latitude, longitude).
+        provider (str): Provedor de roteamento (atualmente apenas "osrm").
+        metrica (str): "duration" (tempo em segundos) ou "distance" (distância em metros).
+        progress_callback (function, optional): Função para reportar progresso (recebe float 0.0 a 1.0).
+
+    Returns:
+        numpy.ndarray or None: Matriz NxN com os valores da métrica, ou None se ocorrer erro crítico.
+                               Retorna INFINITE_VALUE para pares impossíveis de rotear.
     """
     n = len(pontos)
     if n == 0:
-        logging.info("Lista de pontos vazia, retornando matriz vazia.")
-        return np.array([]).reshape(0, 0)
-
-    if provider.lower() != "osrm":
-        logging.error(f"Provedor '{provider}' não suportado.")
-        raise NotImplementedError(f"Provedor '{provider}' não suportado.")
+        logging.warning("Lista de pontos vazia.")
+        return np.array([[]])
+    if provider != "osrm":
+        raise NotImplementedError("Apenas o provedor 'osrm' é suportado no momento.") # Corrigido: Adicionado raise
+    if metrica not in ["duration", "distance"]:
+        raise ValueError("Métrica deve ser 'duration' ou 'distance'.") # Corrigido: Adicionado raise
 
     url_base = f"{OSRM_SERVER_URL}/table/v1/driving/"
-    final_matrix = np.full((n, n), INFINITE_VALUE, dtype=int)
+    final_matrix = np.full((n, n), INFINITE_VALUE, dtype=int) # Usar int para tempos/distâncias
     np.fill_diagonal(final_matrix, 0)
 
     # --- AJUSTE AQUI ---
-    max_coords_per_request = 50 # Reduzido de 100 para 50
+    max_coords_per_request = 15 # Reduzido de 20 para 15
     # -------------------
     num_batches = (n + max_coords_per_request - 1) // max_coords_per_request
     batches = [list(range(i * max_coords_per_request, min((i + 1) * max_coords_per_request, n))) for i in range(num_batches)]
@@ -150,99 +173,93 @@ def calcular_matriz_distancias(pontos, provider="osrm", metrica="duration", prog
     request_count = 0
 
     try:
-        for r_idx, batch_origem_indices in enumerate(batches):
-            for c_idx, batch_destino_indices in enumerate(batches):
+        for r_idx, batch_origem_indices_global in enumerate(batches):
+            for c_idx, batch_destino_indices_global in enumerate(batches):
                 request_count += 1
                 logging.info(f"Calculando submatriz Lote {r_idx+1}/{num_batches} -> Lote {c_idx+1}/{num_batches} (Req {request_count}/{total_requests})")
 
-                combined_indices_list = sorted(list(set(batch_origem_indices + batch_destino_indices)))
-                if not combined_indices_list: continue
+                # --- Validação dos Pontos do Lote Combinado ---
+                # Combina índices globais de origem e destino, removendo duplicatas e mantendo a ordem
+                combined_indices_global = sorted(list(set(batch_origem_indices_global + batch_destino_indices_global)))
+                pontos_lote_combinado = [pontos[i] for i in combined_indices_global]
 
-                # --- Validação e Preparação dos Pontos para OSRM ---
-                osrm_points_coords = []   # Lista de (lat, lon) válidos para OSRM
-                osrm_indices_map = {}     # Mapeia índice original -> índice na lista osrm_points_coords
-                invalid_original_indices = set() # Guarda índices originais inválidos neste lote
+                # Valida as coordenadas *deste lote combinado*
+                osrm_points_coords, indices_validos_no_lote_combinado = _validar_coordenadas(pontos_lote_combinado)
 
-                for orig_idx in combined_indices_list:
-                    # Pega lat/lon do ponto original
-                    try:
-                        lat, lon = pontos[orig_idx]
-                    except IndexError:
-                         logging.error(f"Índice original {orig_idx} fora dos limites da lista de pontos (tamanho {n}). Abortando.")
-                         return None # Erro crítico
+                # Mapeia índices válidos no lote combinado de volta para índices globais
+                indices_globais_validos = [combined_indices_global[i] for i in indices_validos_no_lote_combinado]
 
-                    # Valida as coordenadas
-                    if _is_valid_lat_lon(lat, lon):
-                        # Adiciona à lista para OSRM (convertendo para float aqui) e mapeia
-                        osrm_points_coords.append((float(lat), float(lon)))
-                        osrm_indices_map[orig_idx] = len(osrm_points_coords) - 1
-                    else:
-                        logging.warning(f"Coordenadas inválidas detectadas para ponto índice {orig_idx}: ({lat}, {lon}). Será tratado como inalcançável nesta requisição (Req {request_count}).")
-                        invalid_original_indices.add(orig_idx)
-                # -------------------------------------------------
+                # Mapeia índices globais de origem/destino para índices *dentro da lista de pontos válidos* (osrm_points_coords)
+                # que será enviada ao OSRM. Cria um dicionário para busca rápida.
+                map_global_to_osrm_idx = {global_idx: osrm_idx for osrm_idx, global_idx in enumerate(indices_globais_validos)}
 
-                if not osrm_points_coords:
-                    logging.warning(f"Nenhum ponto válido encontrado no lote combinado (Req {request_count}). Pulando requisição OSRM.")
-                    continue # Pula para o próximo par de lotes
+                # Filtra os índices globais de origem/destino para incluir apenas os que são válidos
+                batch_origem_indices_validos_global = [idx for idx in batch_origem_indices_global if idx in map_global_to_osrm_idx]
+                batch_destino_indices_validos_global = [idx for idx in batch_destino_indices_global if idx in map_global_to_osrm_idx]
+
+                # Obtém os índices correspondentes na lista que vai para o OSRM
+                osrm_sources_indices = [map_global_to_osrm_idx[idx] for idx in batch_origem_indices_validos_global]
+                osrm_destinations_indices = [map_global_to_osrm_idx[idx] for idx in batch_destino_indices_validos_global]
+                # --- Fim Validação ---
+
 
                 # --- Requisição OSRM com Pontos Válidos ---
-                # Verifica se há pelo menos 2 pontos válidos para a requisição
-                if len(osrm_points_coords) < 2:
-                     logging.warning(f"Menos de 2 pontos válidos ({len(osrm_points_coords)}) no lote combinado (Req {request_count}). Pulando requisição OSRM.")
-                     # A matriz já está inicializada com INFINITE_VALUE, então pular está ok.
+                if not osrm_points_coords or len(osrm_points_coords) < 1 or not osrm_sources_indices or not osrm_destinations_indices:
+                     logging.warning(f"Nenhum ponto válido ou nenhuma origem/destino válido no lote combinado (Req {request_count}). Pulando requisição OSRM.")
+                     if progress_callback:
+                        progress_callback(request_count / total_requests)
                      continue
 
-                # Formata a string apenas com coordenadas válidas
                 batch_coords_str = ";".join([f"{lon},{lat}" for lat, lon in osrm_points_coords])
-                partial_matrix_raw = _get_osrm_table_batch(url_base, batch_coords_str, metrica)
+
+                # Adiciona os parâmetros sources e destinations
+                sources_param = ";".join(map(str, osrm_sources_indices))
+                destinations_param = ";".join(map(str, osrm_destinations_indices))
+                params_com_indices = {"sources": sources_param, "destinations": destinations_param}
+
+                # --- AJUSTE AQUI: Usar extra_params ---
+                # Chama a função _get_osrm_table_batch passando a URL base e os parâmetros extras
+                partial_matrix_raw = _get_osrm_table_batch(url_base, batch_coords_str, metrica, timeout=DEFAULT_TIMEOUT, extra_params=params_com_indices)
+                # --------------------------------------
+
 
                 if partial_matrix_raw is None:
-                    logging.error(f"Falha ao obter dados do OSRM para o lote (Req {request_count}/{total_requests}). Abortando cálculo da matriz.")
-                    return None # Aborta se a requisição falhar
+                    # O log de erro detalhado já acontece dentro de _get_osrm_table_batch
+                    logging.error(f"Falha crítica ao obter dados do OSRM para o lote (Req {request_count}/{total_requests}). Abortando cálculo da matriz.")
+                    return None # Aborta se a requisição falhar após retentativas
 
                 # --- Preenchimento da Matriz Final ---
-                partial_matrix = np.array(partial_matrix_raw)
-                num_osrm_points = len(osrm_points_coords)
-                if partial_matrix.shape != (num_osrm_points, num_osrm_points):
-                     logging.error(f"Dimensão inesperada da matriz OSRM recebida ({partial_matrix.shape}) para {num_osrm_points} pontos válidos. Abortando.")
-                     return None
+                # A matriz retornada pelo OSRM com sources/destinations tem shape (len(sources), len(destinations))
+                # Iteramos sobre os resultados e colocamos na matriz final usando os índices globais válidos
+                expected_rows = len(osrm_sources_indices)
+                expected_cols = len(osrm_destinations_indices)
+                actual_rows = len(partial_matrix_raw) if partial_matrix_raw is not None else 0
+                actual_cols = len(partial_matrix_raw[0]) if actual_rows > 0 and partial_matrix_raw[0] is not None else 0
 
-                # Itera sobre os pares de índices ORIGINAIS dos lotes combinados
-                for orig_idx_src in combined_indices_list:
-                    for orig_idx_dst in combined_indices_list:
-                        # Só atualiza se o par pertence aos lotes atuais
-                        if orig_idx_src in batch_origem_indices and orig_idx_dst in batch_destino_indices:
+                if actual_rows != expected_rows or actual_cols != expected_cols:
+                     logging.error(f"Erro: Dimensões da matriz OSRM ({actual_rows}x{actual_cols}) "
+                                   f"não correspondem aos índices de origem/destino enviados ({expected_rows}x{expected_cols}). Req {request_count}")
+                     # Considerar isso um erro crítico também? Por enquanto, loga e continua, pode preencher errado.
+                     # return None # Descomentar para abortar
+                else:
+                    for i, source_global_idx in enumerate(batch_origem_indices_validos_global):
+                        for j, dest_global_idx in enumerate(batch_destino_indices_validos_global):
+                            value = partial_matrix_raw[i][j]
+                            # OSRM retorna null para rotas impossíveis
+                            final_matrix[source_global_idx, dest_global_idx] = int(value) if value is not None else INFINITE_VALUE
 
-                            # Verifica se ambos os pontos eram válidos para esta requisição OSRM
-                            if orig_idx_src in invalid_original_indices or orig_idx_dst in invalid_original_indices:
-                                if orig_idx_src != orig_idx_dst:
-                                     final_matrix[orig_idx_src, orig_idx_dst] = INFINITE_VALUE
-                                # else: diagonal já é 0
-                            else:
-                                # Ambos válidos, busca os índices na matriz parcial
-                                osrm_i = osrm_indices_map[orig_idx_src]
-                                osrm_j = osrm_indices_map[orig_idx_dst]
-                                value = partial_matrix[osrm_i, osrm_j]
-
-                                if orig_idx_src == orig_idx_dst:
-                                    final_matrix[orig_idx_src, orig_idx_dst] = 0
-                                else:
-                                    final_matrix[orig_idx_src, orig_idx_dst] = int(value) if value is not None else INFINITE_VALUE
-
+                # Atualiza progresso
                 if progress_callback:
-                    try:
-                        progress_callback(request_count / total_requests)
-                    except Exception as e_cb:
-                        logging.warning(f"Erro ao chamar progress_callback: {e_cb}")
+                    progress_callback(request_count / total_requests)
+                # --- Fim Preenchimento ---
 
         logging.info(f"Matriz de '{metrica}' ({final_matrix.shape}) calculada com sucesso usando lotes.")
         return final_matrix
 
     except Exception as e:
         logging.error(f"Erro inesperado durante cálculo da matriz OSRM em lote: {e}")
-        logging.error(traceback.format_exc())
+        logging.error(traceback.format_exc()) # Log completo do traceback
         return None
-
 
 def calcular_distancia(ponto_a, ponto_b, provider="osrm", metrica="duration"):
     """
@@ -349,3 +366,11 @@ if __name__ == '__main__':
     matriz_zero_pontos = calcular_matriz_distancias([])
     print("Matriz com 0 pontos:")
     print(matriz_zero_pontos)
+
+    print("\nCalculando matriz de DISTÂNCIA...")
+    matriz_distancia = calcular_matriz_distancias(pontos_exemplo, metrica="distance")
+    if matriz_distancia is not None:
+        print("Matriz de Distância (metros):")
+        print(matriz_distancia)
+    else:
+        print("Falha ao calcular matriz de distância.")
