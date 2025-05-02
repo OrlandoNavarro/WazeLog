@@ -1,3 +1,18 @@
 [theme]
-base="auto"
-primaryColor="#1976d2" # Define a cor primária como azul
+# Cor primária (azul principal)
+primaryColor="#1976D2"
+
+# Cor de fundo principal (branco)
+backgroundColor="#FFFFFF"
+
+# Cor de fundo secundária (para barras laterais, expansores, etc. - um cinza claro)
+secondaryBackgroundColor="#F0F2F6"
+
+# Cor do texto principal (um cinza escuro, não preto puro)
+textColor="#31333F"
+
+# Fonte padrão (usar sans-serif para compatibilidade)
+font="sans serif"
+
+[server]
+runOnSave = true
