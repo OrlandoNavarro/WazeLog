@@ -204,14 +204,37 @@ body[data-theme="dark"] .main-header {
     background: linear-gradient(90deg, #181a1b 0%, #23272b 100%) !important;
     color: #f5f7fa !important;
 }
+
+/* Ensure Sidebar MAIN container is dark */
 body[data-theme="dark"] section[data-testid="stSidebar"] {
-    background-color: #181a1b !important; /* Dark background for sidebar */
+    background-color: #181a1b !important;
     border-right: 1px solid #23272b !important;
 }
+
+/* Ensure the direct child div also gets the background */
 body[data-theme="dark"] section[data-testid="stSidebar"] > div:first-child {
     background-color: transparent !important; /* Inherit from parent */
     color: #f5f7fa !important;
 }
+
+/* Ensure the menu container itself is transparent in dark mode */
+body[data-theme="dark"] .sidebar-menu-premium {
+    background-color: transparent !important;
+}
+
+/* NEW: Target ANY direct div child of the menu container */
+body[data-theme="dark"] .sidebar-menu-premium > div {
+    background-color: transparent !important;
+}
+
+/* Style for NON-SELECTED menu buttons in dark mode */
+body[data-theme="dark"] .stButton>button[kind="secondary"][data-testid="baseButton-secondary"] {
+    background: transparent !important; /* Transparent background */
+    color: #90caf9 !important;
+    border: 1px solid transparent !important;
+    width: 100%; /* Ensure button takes full width */
+}
+
 body[data-theme="dark"] .menu-item-premium { /* DIV dark */
     background: #23272b !important;
     color: #90caf9 !important;
