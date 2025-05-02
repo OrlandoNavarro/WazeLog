@@ -208,7 +208,13 @@ def show():
                         m = folium.Map(location=[depot_lat, depot_lon], zoom_start=12)
                         folium.Marker([depot_lat, depot_lon], icon=folium.Icon(color='blue', icon='home'), tooltip='Depósito').add_to(m)
                         for i, row in pontos.iterrows():
-                            folium.Marker([row['Latitude'], row['Longitude']], tooltip=f"Pedido {row.get('Nº Pedido', i)}").add_to(m)
+                            # <<< MODIFICADO: Garante que 'Nº Pedido' seja usado no tooltip >>>
+                            tooltip_text = f"Pedido: {row.get('Nº Pedido', 'ID Desconhecido')}"
+                            folium.Marker(
+                                [row['Latitude'], row['Longitude']],
+                                tooltip=tooltip_text,
+                                icon=folium.Icon(color='red', icon='info-sign') # Mantém ícone vermelho
+                            ).add_to(m)
                         # Trajeto real por ruas (OSRM)
                         # Calcular distância total (km) e tempo total (min) da rota
                         distancia_total_km = 0
@@ -308,7 +314,13 @@ def show():
                 m = folium.Map(location=[depot_lat, depot_lon], zoom_start=12)
                 folium.Marker([depot_lat, depot_lon], icon=folium.Icon(color='blue', icon='home'), tooltip='Depósito').add_to(m)
                 for i, row in pontos.iterrows():
-                    folium.Marker([row['Latitude'], row['Longitude']], tooltip=f"Pedido {row.get('Nº Pedido', i)}").add_to(m)
+                    # <<< MODIFICADO: Garante que 'Nº Pedido' seja usado no tooltip >>>
+                    tooltip_text = f"Pedido: {row.get('Nº Pedido', 'ID Desconhecido')}"
+                    folium.Marker(
+                        [row['Latitude'], row['Longitude']],
+                        tooltip=tooltip_text,
+                        icon=folium.Icon(color='red', icon='info-sign') # Mantém ícone vermelho
+                    ).add_to(m)
                 # Trajeto real por ruas (OSRM)
                 # Calcular distância total (km) e tempo total (min) da rota
                 distancia_total_km = 0
