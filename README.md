@@ -18,58 +18,71 @@ Wazelog é uma plataforma moderna para roteirização inteligente de entregas, c
 - pip
 
 ## 🚀 Instalação
-1. Clone o repositório ou baixe os arquivos.
-2. Instale as dependências:
+1. Clone o repositório:
+   ```bash
+   git clone https://github.com/OrlandoNavarro/WazeLog.git
+   cd WazeLog
+   ```
+2. **Importante (Git LFS):** Este repositório usa Git Large File Storage (LFS) para arquivos grandes (como mapas `.osm.pbf`). Certifique-se de ter o Git LFS instalado ([https://git-lfs.github.com/](https://git-lfs.github.com/)) e execute `git lfs install` uma vez antes de prosseguir, se necessário. O Git LFS deve baixar os arquivos grandes automaticamente durante o clone ou checkout.
+3. Instale as dependências Python:
    ```bash
    pip install -r requirements.txt
    ```
 
 ## 🏁 Como iniciar o projeto
 
+A maneira mais fácil de iniciar todos os componentes do Wazelog (Servidor OSRM, Backend FastAPI e Frontend Streamlit) é usando o script `start_wazelog.sh`.
+
+1.  **Torne o script executável (apenas uma vez):**
+    ```bash
+    chmod +x start_wazelog.sh
+    ```
+2.  **Execute o script:**
+    ```bash
+    ./start_wazelog.sh
+    ```
+
+**O que o script faz:**
+*   Verifica e tenta liberar as portas 8000 (FastAPI) e 8501 (Streamlit) se estiverem em uso.
+*   Inicia o servidor OSRM local usando Docker em background (usando o arquivo `routing/osrm_local/data/sao-paulo-latest.osm.pbf`).
+    *   *Observação:* Na primeira execução do Docker, o pré-processamento do mapa pode levar um tempo considerável. Aguarde a conclusão.
+*   Inicia o backend FastAPI em background na porta 8000.
+*   Inicia o frontend Streamlit em primeiro plano na porta 8501.
+*   Quando você interrompe o script (pressionando `Ctrl+C` no terminal onde o Streamlit está rodando), ele tenta parar o processo FastAPI e os containers Docker do OSRM automaticamente.
+
+**Acesso:**
+*   Backend FastAPI: http://localhost:8000
+*   Frontend Streamlit: http://localhost:8501
+
+**(Opcional) Execução Manual (se não usar o script):**
+
 ### 1. (Opcional, mas recomendado) Inicie o Servidor OSRM Local com Docker
-Para evitar limites e timeouts do servidor público do OSRM, você pode rodar uma instância local usando Docker. Isso requer o download dos dados do mapa (ex: Brasil) e um pré-processamento inicial que pode demorar.
-
-   a. Navegue até o diretório de configuração do OSRM local:
+   *   **Arquivo de Mapa:** Certifique-se de que o arquivo `routing/osrm_local/data/sao-paulo-latest.osm.pbf` existe. Se não existir, você pode baixá-lo ou usar outro arquivo `.osm.pbf` e ajustar o `docker-compose.yml` se necessário.
+   *   **Iniciar:**
       ```bash
+      # Navegue até o diretório
       cd /workspaces/WazeLog/routing/osrm_local/
+      # Inicie (em background)
+      docker-compose up -d
+      # Volte para a raiz
+      cd /workspaces/WazeLog/
       ```
-   b. Inicie os serviços Docker Compose:
+   *   **Parar:**
       ```bash
-      docker-compose up
-      ```
-      Alternativamente, você pode executar os dois passos em um único comando:
-      ```bash
-      cd /workspaces/WazeLog/routing/osrm_local/ && docker-compose up
-      ```
-      ```
-      cd /workspaces/WazeLog/routing/osrm_local/data/ && wget http://download.geofabrik.de/south-america/brazil/sudeste-latest.osm.pbf && mv sudeste-latest.osm.pbf sao-paulo-latest.osm.pbf
-
-      ```
-   c. **Aguarde o Pré-processamento:** Na primeira execução, o Docker baixará a imagem do OSRM e iniciará o pré-processamento dos dados do mapa (`brazil-latest.osm.pbf`). **Este passo pode levar bastante tempo (vários minutos a mais de uma hora)**. Aguarde até ver a mensagem "--- Pré-processamento OSRM concluído com sucesso! ---" no terminal. O container `osrm_preprocess_brazil` deve parar após o sucesso.
-   d. **Servidor Rodando:** Após o pré-processamento, o container `osrm_backend_brazil` iniciará automaticamente e ficará escutando na porta `5000`. O código Python já está configurado para usar `http://localhost:5000` quando este servidor estiver ativo.
-   e. Para rodar o servidor em background nas próximas vezes (após o pré-processamento inicial):
-      ```bash
-      # Dentro de /workspaces/WazeLog/routing/osrm_local/
-      docker-compose up -d osrm-backend
-      ```
-   f. Para parar o servidor:
-      ```bash
-      # cd /workspaces/WazeLog/routing/osrm_local/data/ && wget http://download.geofabrik.de/south-america/brazil/sudeste-latest.osm.pbf && mv sudeste-latest.osm.pbf sao-paulo-latest.osm.pbf
+      cd /workspaces/WazeLog/routing/osrm_local/ && docker-compose down
       ```
 
 ### 2. Inicie o backend FastAPI
-```bash
-uvicorn main:app --reload
-python -m uvicorn main:app
-```
-Acesse: http://localhost:8000
+   ```bash
+   # Na raiz do projeto (/workspaces/WazeLog)
+   python -m uvicorn main:app --host 0.0.0.0 --port 8000
+   ```
 
 ### 3. Inicie o frontend Streamlit
-```bash
-streamlit run app/app.py
-python -m streamlit run app/app.py
-```
-Acesse: http://localhost:8501
+   ```bash
+   # Na raiz do projeto (/workspaces/WazeLog)
+   python -m streamlit run app/app.py --server.port 8501
+   ```
 
 ## 🗂️ Estrutura de Pastas
 - `app/` - Código principal do Streamlit e módulos auxiliares
@@ -90,4 +103,3 @@ Pull requests são bem-vindos! Para grandes mudanças, abra uma issue primeiro p
 ---
 Desenvolvido por Orlando e colaboradores.
 Agradecemos a todos os contribuidores e usuários que tornam o Wazelog uma ferramenta melhor a cada dia! 🚀
-```
