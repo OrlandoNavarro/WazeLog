@@ -325,6 +325,16 @@ def show():
                             with st.expander("Visualizar Tabela de Rotas Geradas (com Coordenadas)", expanded=True):
                                 st.dataframe(rotas_df, use_container_width=True)
 
+                            # <<< ADICIONAR CÓDIGO PARA SALVAR O CSV AQUI >>>
+                            try:
+                                csv_path = "/workspaces/WazeLog/data/Roteirizacao.csv"
+                                rotas_df.to_csv(csv_path, index=False, encoding='utf-8')
+                                st.success(f"Rotas salvas com sucesso em {csv_path}")
+                            except Exception as save_err:
+                                st.error(f"Erro ao salvar o arquivo CSV: {save_err}")
+                            # <<< FIM DO CÓDIGO ADICIONADO >>>
+
+
                             distancia_total_real_m = 0
                             if matriz_distancias is not None and 'Veículo' in rotas_df.columns and 'Node_Index_OR' in rotas_df.columns:
                                 try:
