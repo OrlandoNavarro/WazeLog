@@ -132,10 +132,35 @@ def show():
         if pedidos_todos is not None:
             pedidos_mapa = pedidos_todos.dropna(subset=['Latitude', 'Longitude']).copy()
             if not pedidos_mapa.empty:
-                df_map = pedidos_mapa.rename(columns={"Latitude": "latitude", "Longitude": "longitude"})
-                st.map(df_map)
+                # <<< SUBSTITUÍDO st.map por folium >>>
+                map_location = default_depot_location # Usa localização padrão ou salva
+                m = folium.Map(location=map_location, zoom_start=11) # Zoom um pouco mais afastado
+
+                # Adiciona marcador do depósito (opcional, mas mantém consistência)
+                if depot_lat and depot_lon:
+                    folium.Marker(
+                        [depot_lat, depot_lon],
+                        icon=folium.Icon(color='blue', icon='home'),
+                        tooltip='Depósito'
+                    ).add_to(m)
+
+                # Adiciona marcadores para cada pedido com popup
+                for idx, row in pedidos_mapa.iterrows():
+                    pedido_info = f"Pedido: {row.get('Nº Pedido', 'ID Desconhecido')}"
+                    folium.Marker(
+                        [row['Latitude'], row['Longitude']],
+                        tooltip=pedido_info, # Mostra ao passar o mouse
+                        popup=pedido_info,   # Mostra ao clicar
+                        icon=folium.Icon(color='red', icon='info-sign')
+                    ).add_to(m)
+
+                # Exibe o mapa folium
+                st_folium(m, width=None, height=500, key="mapa_apenas_pedidos") # Chave fixa para esta visualização
             else:
                 st.warning("Nenhum pedido com coordenadas válidas encontrado.")
+        else:
+            st.warning("Não foi possível carregar os dados dos pedidos.")
+
     # <<< ADICIONADO: Lógica para carregar do CSV >>>
     elif selecao == "Carregar última rota salva (CSV)":
         st.info(f"Tentando carregar a última rota salva de {ROTEIRIZACAO_CSV_PATH}")
@@ -245,8 +270,15 @@ def show():
                                         tempo_total_min += route.get('duration', 0) / 60
                             except Exception:
                                 pass
-                        st_folium(m, width=None, height=500)
+                        # <<< MODIFICADO: Adiciona chave dinâmica ao st_folium >>>
+                        # Cria chave única baseada na seleção para evitar erro de chave duplicada
+                        # Remove caracteres inválidos para uma chave
+                        safe_selecao = "".join(c for c in selecao if c.isalnum() or c in ('_'))
+                        map_key = f"folium_map_{safe_selecao}"
+                        st_folium(m, width=None, height=500, key=map_key)
+
                         # Exibir métricas organizadas em 2 colunas, separadas por '-'
+                        # <<< GARANTIR INDENTAÇÃO CORRETA AQUI >>>
                         with st.container():
                             col_esq, col_dir = st.columns(2)
                             with col_esq:
@@ -270,115 +302,18 @@ def show():
                 else:
                     st.info("Não há dados de rota para a placa selecionada.")
             else:
-                st.warning("Dados de rotas ou coordenadas ausentes no cenário selecionado. Exibindo apenas depósito.")
+                # Se rotas_df for None ou vazio após carregar CSV ou cenário
+                if selecao != "Mostrar apenas pedidos":
+                     st.warning("Não foi possível carregar ou exibir os dados da rota selecionada.")
+                # else: # Caso de 'Mostrar apenas pedidos' já tratado
+                #     pass # Não faz nada extra aqui se for só pedidos
+
         except (ValueError, IndexError):
             st.error("Erro ao selecionar o cenário.")
+    # <<< MODIFICADO: Movido para fora do bloco try/except do cenário >>>
+    elif selecao != "Mostrar apenas pedidos" and rotas_df is None: # Se tentou carregar CSV e falhou (rotas_df ainda é None)
+        st.warning("Não foi possível carregar ou exibir os dados da rota selecionada do CSV.")
 
-    # --- Lógica de Exibição do Mapa (comum para CSV e Cenários) ---
-    if rotas_df is not None and not rotas_df.empty and 'Latitude' in rotas_df.columns and 'Longitude' in rotas_df.columns:
-        # Filtro de placas e cards de resumo
-        placa_selecionada = None
-        if 'Veículo' in rotas_df.columns:
-            placas_unicas = rotas_df['Veículo'].dropna().unique().tolist()
-            placa_selecionada = st.selectbox(
-                "Selecione a placa do veículo para análise:",
-                options=placas_unicas,
-                index=0,
-                help="Selecione uma placa para visualizar e analisar as rotas desse veículo no mapa."
-            )
-            if placa_selecionada:
-                rotas_df = rotas_df[rotas_df['Veículo'] == placa_selecionada]
-                # Cards de resumo
-                capacidade_veiculo = None
-                frota_df = None
-                try:
-                    from database import carregar_frota
-                    frota_df = carregar_frota()
-                except Exception:
-                    pass
-                if frota_df is not None and not frota_df.empty and 'Placa' in frota_df.columns:
-                    veic_row = frota_df[frota_df['Placa'] == placa_selecionada]
-                    if not veic_row.empty:
-                        capacidade_veiculo = veic_row.iloc[0].get('Capacidade (Kg)', None)
-                qtd_pedidos = len(rotas_df)
-                peso_total = rotas_df['Peso dos Itens'].sum() if 'Peso dos Itens' in rotas_df.columns else 0
-        # Exibe rotas no mapa com trajeto real por ruas usando OSRM
-        if not rotas_df.empty:
-            pontos = rotas_df.dropna(subset=["Latitude", "Longitude"])
-            if not pontos.empty:
-                if 'Sequencia' in pontos.columns:
-                    pontos = pontos.sort_values('Sequencia')
-                coords = [[depot_lat, depot_lon]]
-                coords += pontos[["Latitude", "Longitude"]].values.tolist()
-                if len(coords) > 2 and (coords[-1] != coords[0]):
-                    coords.append([depot_lat, depot_lon])
-                m = folium.Map(location=[depot_lat, depot_lon], zoom_start=12)
-                folium.Marker([depot_lat, depot_lon], icon=folium.Icon(color='blue', icon='home'), tooltip='Depósito').add_to(m)
-                for i, row in pontos.iterrows():
-                    # <<< MODIFICADO: Garante que 'Nº Pedido' seja usado no tooltip e popup >>>
-                    pedido_info = f"Pedido: {row.get('Nº Pedido', 'ID Desconhecido')}"
-                    folium.Marker(
-                        [row['Latitude'], row['Longitude']],
-                        tooltip=pedido_info, # Mostra ao passar o mouse
-                        popup=pedido_info,   # Mostra ao clicar
-                        icon=folium.Icon(color='red', icon='info-sign') # Mantém ícone vermelho
-                    ).add_to(m)
-                # Trajeto real por ruas (OSRM)
-                # Calcular distância total (km) e tempo total (min) da rota
-                distancia_total_km = 0
-                tempo_total_min = 0
-                import requests
-                for i in range(len(coords)-1):
-                    origem = coords[i]
-                    destino = coords[i+1]
-                    url = f"http://localhost:5000/route/v1/driving/{origem[1]},{origem[0]};{destino[1]},{destino[0]}?overview=full&geometries=geojson"
-                    try:
-                        resp = requests.get(url, timeout=10)
-                        if resp.status_code == 200:
-                            data = resp.json()
-                            if data.get('routes'):
-                                route = data['routes'][0]
-                                geometry = route['geometry']
-                                # Define cor: vermelho para ida, azul para volta
-                                if i < len(coords)-2:
-                                    cor_linha = 'red'  # Ida
-                                else:
-                                    cor_linha = 'blue' # Volta para base
-                                folium.PolyLine(
-                                    locations=[(lat, lon) for lon, lat in geometry['coordinates']],
-                                    color=cor_linha, weight=4, opacity=0.8
-                                ).add_to(m)
-                                distancia_total_km += route.get('distance', 0) / 1000
-                                tempo_total_min += route.get('duration', 0) / 60
-                    except Exception:
-                        pass
-                st_folium(m, width=None, height=500)
-                # Exibir métricas organizadas em 2 colunas, separadas por '-'
-                with st.container():
-                    col_esq, col_dir = st.columns(2)
-                    with col_esq:
-                        st.metric("Placa do Veículo", placa_selecionada)
-                        st.markdown("<div style='font-size:1.2rem;text-align:center;'>-</div>", unsafe_allow_html=True)
-                        st.metric("Pedidos Empenhados", qtd_pedidos)
-                        st.markdown("<div style='font-size:1.2rem;text-align:center;'>-</div>", unsafe_allow_html=True)
-                        st.metric("Distância Total (km)", f"{distancia_total_km:.1f}")
-                    with col_dir:
-                        st.metric("Capacidade do Veículo (Kg)", f"{capacidade_veiculo:,.1f}" if capacidade_veiculo is not None else "N/A")
-                        st.markdown("<div style='font-size:1.2rem;text-align:center;'>-</div>", unsafe_allow_html=True)
-                        st.metric("Peso Empenhado (Kg)", f"{peso_total:,.1f}")
-                        st.markdown("<div style='font-size:1.2rem;text-align:center;'>-</div>", unsafe_allow_html=True)
-                        # Exibir tempo estimado no formato hh:mm
-                        horas = int(tempo_total_min // 60) if tempo_total_min else 0
-                        minutos = int(round(tempo_total_min % 60)) if tempo_total_min else 0
-                        tempo_formatado = f"{horas}:{minutos:02d}"
-                        st.metric("Tempo Estimado (h)", tempo_formatado)
-            else:
-                st.info("Não há coordenadas válidas para exibir o trajeto.")
-        else:
-            st.info("Não há dados de rota para a placa selecionada.")
-    # <<< ADICIONADO: Mensagem se rotas_df for None após tentativa de carga >>>
-    elif selecao != "Mostrar apenas pedidos": # Se tentou carregar CSV ou cenário e falhou
-        st.warning("Não foi possível carregar ou exibir os dados da rota selecionada.")
 
 # Comentar execução direta se a navegação for centralizada
 # if __name__ == "__main__":
