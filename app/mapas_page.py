@@ -205,7 +205,7 @@ def show():
                         coords += pontos[["Latitude", "Longitude"]].values.tolist()
                         if len(coords) > 2 and (coords[-1] != coords[0]):
                             coords.append([depot_lat, depot_lon])
-                        m = folium.Map(location=[depot_lat, depot_lon], zoom_start=12, tiles="CartoDB dark_matter")
+                        m = folium.Map(location=[depot_lat, depot_lon], zoom_start=12)
                         folium.Marker([depot_lat, depot_lon], icon=folium.Icon(color='blue', icon='home'), tooltip='Depósito').add_to(m)
                         for i, row in pontos.iterrows():
                             folium.Marker([row['Latitude'], row['Longitude']], tooltip=f"Pedido {row.get('Nº Pedido', i)}").add_to(m)
@@ -305,7 +305,7 @@ def show():
                 coords += pontos[["Latitude", "Longitude"]].values.tolist()
                 if len(coords) > 2 and (coords[-1] != coords[0]):
                     coords.append([depot_lat, depot_lon])
-                m = folium.Map(location=[depot_lat, depot_lon], zoom_start=12, tiles="CartoDB dark_matter")
+                m = folium.Map(location=[depot_lat, depot_lon], zoom_start=12)
                 folium.Marker([depot_lat, depot_lon], icon=folium.Icon(color='blue', icon='home'), tooltip='Depósito').add_to(m)
                 for i, row in pontos.iterrows():
                     folium.Marker([row['Latitude'], row['Longitude']], tooltip=f"Pedido {row.get('Nº Pedido', i)}").add_to(m)
