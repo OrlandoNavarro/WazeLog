@@ -204,13 +204,21 @@ body[data-theme="dark"] .main-header {
     background: linear-gradient(90deg, #181a1b 0%, #23272b 100%) !important;
     color: #f5f7fa !important;
 }
+body[data-theme="dark"] section[data-testid="stSidebar"] {
+    background-color: #181a1b !important; /* Dark background for sidebar */
+    border-right: 1px solid #23272b !important;
+}
+body[data-theme="dark"] section[data-testid="stSidebar"] > div:first-child {
+    background-color: transparent !important; /* Inherit from parent */
+    color: #f5f7fa !important;
+}
 body[data-theme="dark"] .menu-item-premium { /* DIV dark */
     background: #23272b !important;
     color: #90caf9 !important;
     border: 1px solid #23272b !important;
 }
 body[data-theme="dark"] .stButton>button[kind="secondary"][data-testid="baseButton-secondary"] { /* Botão dark */
-    background: #23272b !important;
+    background: transparent !important; /* Make button background transparent */
     color: #90caf9 !important;
     border: 1px solid transparent !important;
 }
@@ -240,7 +248,7 @@ body[data-theme="dark"] .stSidebar {
     border-radius: 16px;
 }
 body[data-theme="dark"] .menu-title-premium {
-    color: #64b5f6;
+    color: #64b5f6 !important; /* Title color in dark */
 }
 body[data-theme="dark"] .menu-divider-premium {
     background: #30363F;
