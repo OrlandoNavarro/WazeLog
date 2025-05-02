@@ -126,6 +126,10 @@ def situacao_cadastral_str(situacao):
     return s.upper()
 
 def show():
+    # <<< ADICIONADO: Inicializa estado de processamento >>>
+    if 'processing_cnpj' not in st.session_state:
+        st.session_state.processing_cnpj = False
+
     st.header("🔎 Busca de CNPJ", divider="rainbow")
     st.markdown("""
     <style>
