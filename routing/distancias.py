@@ -7,9 +7,11 @@ import time
 import logging
 import json
 import traceback # Adicionado para log de erro completo
+import os # Adicionado para ler variáveis de ambiente
 
 # --- Constantes ---
-OSRM_SERVER_URL = "http://localhost:5000" # Alterado para usar o servidor OSRM local via Docker
+# Use a variável de ambiente OSRM_BASE_URL se definida, senão usa localhost:5000
+OSRM_SERVER_URL = os.environ.get("OSRM_BASE_URL", "http://localhost:5000")
 MAX_RETRIES = 3
 # --- AJUSTE AQUI ---
 RETRY_DELAY = 15 # Segundos entre retentativas
@@ -191,7 +193,7 @@ def calcular_matriz_distancias(pontos, provider="osrm", metrica="duration", prog
 
                 # Mapeia índices globais de origem/destino para índices *dentro da lista de pontos válidos* (osrm_points_coords)
                 # que será enviada ao OSRM. Cria um dicionário para busca rápida.
-                map_global_to_osrm_idx = {global_idx: osrm_idx for osrm_idx, global_idx in enumerate(indices_globais_validos)}
+                map_global_to_osrm_idx = {osrm_idx: global_idx for osrm_idx, global_idx in enumerate(indices_globais_validos)}
 
                 # Filtra os índices globais de origem/destino para incluir apenas os que são válidos
                 batch_origem_indices_validos_global = [idx for idx in batch_origem_indices_global if idx in map_global_to_osrm_idx]
