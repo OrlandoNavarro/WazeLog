@@ -5,469 +5,771 @@ import openpyxl
 from pedidos import obter_coordenadas
 from database import salvar_cnpj_enderecos, carregar_cnpj_enderecos, limpar_cnpj_enderecos
 import io
+import time
+import json
+import logging
+import re # Importado para limpeza de CNPJ
 
-def extrair_nome_campo(campo, chave_nome='nome', chave_sigla='sigla'):
-    if isinstance(campo, dict):
-        if chave_nome in campo:
-            return campo[chave_nome]
-        if chave_sigla in campo:
-            return campo[chave_sigla]
-        return str(campo)
-    return str(campo)
+# Configuração básica do logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
+def extrair_nome_campo(valor, chave_nome='nome', chave_sigla='sigla'):
+    """Extrai o nome de um campo que pode ser um dict ou string."""
+    if isinstance(valor, dict):
+        return valor.get(chave_nome, valor.get(chave_sigla, ''))
+    return str(valor) if valor else ''
+
+def formatar_telefone(ddd, numero):
+    """Formata DDD e número em um telefone limpo."""
+    ddd_str = str(ddd).strip() if ddd else ''
+    num_str = str(numero).strip() if numero else ''
+    if not ddd_str and not num_str:
+        return None
+    # Remove caracteres não numéricos
+    tel_limpo = re.sub(r'\D', '', ddd_str + num_str)
+    return tel_limpo if tel_limpo else None
+
+def formatar_cep(cep):
+    """Formata um CEP removendo caracteres não numéricos e adicionando hífen."""
+    if not cep:
+        return None
+    cep_limpo = re.sub(r'\\D', '', str(cep))
+    if len(cep_limpo) == 8:
+        # Corrigido: Adicionada a aspa dupla final na f-string
+        return f"{cep_limpo[:5]}-{cep_limpo[5:]}"
+    return cep_limpo # Retorna limpo se não tiver 8 dígitos
 
 def buscar_endereco_cnpj(cnpj):
-    url1 = f"https://brasilapi.com.br/api/cnpj/v1/{cnpj}"
-    url2 = f"https://publica.cnpj.ws/cnpj/{cnpj}"
-    url3 = f"https://www.receitaws.com.br/v1/cnpj/{cnpj}"
-    url4 = f"https://api-publica.simplesreceita.com.br/api/v1/empresa/{cnpj}"
-    # 1. BrasilAPI
-    try:
-        resp = requests.get(url1, timeout=10)
-        if resp.status_code == 200:
-            data = resp.json()
-            municipio = extrair_nome_campo(data.get('municipio', ''))
-            uf = extrair_nome_campo(data.get('uf', ''), chave_nome='sigla', chave_sigla='sigla')
-            endereco = f"{data.get('logradouro', '')}, {data.get('numero', '')}, {data.get('bairro', '')}, {municipio}, {uf}"
-            situacao = data.get('situacao_cadastral', '') or data.get('situacao', '')
-            if endereco.strip(", "):
-                return endereco, situacao
-    except Exception:
-        pass
-    # 2. CNPJ.ws
-    try:
-        resp = requests.get(url2, timeout=10)
-        if resp.status_code == 200:
-            data = resp.json()
-            est = data.get('estabelecimento', {})
-            cidade = extrair_nome_campo(est.get('cidade', ''))
-            estado = extrair_nome_campo(est.get('estado', ''), chave_nome='sigla', chave_sigla='sigla')
-            endereco = f"{est.get('logradouro', '')}, {est.get('numero', '')}, {est.get('bairro', '')}, {cidade}, {estado}"
-            situacao = est.get('situacao_cadastral', '') or est.get('situacao', '')
-            if endereco.strip(", "):
-                return endereco, situacao
-    except Exception:
-        pass
-    # 3. ReceitaWS
-    try:
-        resp = requests.get(url3, timeout=10)
-        if resp.status_code == 200:
-            data = resp.json()
-            municipio = extrair_nome_campo(data.get('municipio', ''))
-            uf = extrair_nome_campo(data.get('uf', ''), chave_nome='sigla', chave_sigla='sigla')
-            endereco = f"{data.get('logradouro', '')}, {data.get('numero', '')}, {data.get('bairro', '')}, {municipio}, {uf}"
-            situacao = data.get('situacao', '')
-            if endereco.strip(", "):
-                return endereco, situacao
-    except Exception:
-        pass
-    # 4. SimplesReceita
-    try:
-        resp = requests.get(url4, timeout=10)
-        if resp.status_code == 200:
-            data = resp.json()
-            municipio = extrair_nome_campo(data.get('municipio', ''))
-            uf = extrair_nome_campo(data.get('uf', ''), chave_nome='sigla', chave_sigla='sigla')
-            endereco = f"{data.get('logradouro', '')}, {data.get('numero', '')}, {data.get('bairro', '')}, {municipio}, {uf}"
-            situacao = data.get('situacao_cadastral', '') or data.get('situacao', '')
-            if endereco.strip(", "):
-                return endereco, situacao
-    except Exception:
-        pass
-    return None, None
+    """Busca dados de um CNPJ em várias APIs.
 
-def google_maps_link(endereco):
-    from urllib.parse import quote_plus
-    if endereco is None:
-        endereco = ""
-    return f"https://www.google.com/maps/search/?api=1&query={quote_plus(str(endereco))}"
+    Retorna um dicionário com:
+    'logradouro', 'numero', 'complemento', 'bairro', 'municipio', 'uf', 'cep',
+    'situacao', 'telefone', 'email'.
+    Retorna None para campos não encontrados.
+    """
+    cnpj_limpo = re.sub(r'\\D', '', str(cnpj))
+    if len(cnpj_limpo) != 14:
+        logging.warning(f"CNPJ inválido fornecido: {cnpj}")
+        # Retorna a estrutura esperada com None
+        return {
+            'logradouro': None, 'numero': None, 'complemento': None, 'bairro': None,
+            'municipio': None, 'uf': None, 'cep': None, 'situacao': 'Inválido',
+            'telefone': None, 'email': None
+        }
 
-# Para obter coordenadas, continue usando a função obter_coordenadas(endereco) ou outra API de geocodificação.
-# O link do Google Maps não retorna latitude/longitude diretamente.
+    apis = [
+        {
+            "nome": "BrasilAPI",
+            "url": f"https://brasilapi.com.br/api/cnpj/v1/{cnpj_limpo}",
+            "parser": lambda data: {
+                "logradouro": data.get('logradouro'),
+                "numero": data.get('numero'),
+                "complemento": data.get('complemento'),
+                "bairro": data.get('bairro'),
+                "municipio": extrair_nome_campo(data.get('municipio')),
+                "uf": extrair_nome_campo(data.get('uf'), chave_nome='sigla', chave_sigla='sigla'),
+                "cep": formatar_cep(data.get('cep')),
+                "situacao": data.get('situacao_cadastral') or data.get('situacao'),
+                "telefone": formatar_telefone(data.get('ddd_telefone_1'), data.get('telefone_1')),
+                "email": data.get('email')
+            }
+        },
+        {
+            "nome": "CNPJ.ws",
+            "url": f"https://publica.cnpj.ws/cnpj/{cnpj_limpo}",
+            "parser": lambda data: {
+                "logradouro": data.get('estabelecimento', {}).get('logradouro'),
+                "numero": data.get('estabelecimento', {}).get('numero'),
+                "complemento": data.get('estabelecimento', {}).get('complemento'),
+                "bairro": data.get('estabelecimento', {}).get('bairro'),
+                "municipio": extrair_nome_campo(data.get('estabelecimento', {}).get('cidade')),
+                "uf": extrair_nome_campo(data.get('estabelecimento', {}).get('estado'), chave_nome='sigla', chave_sigla='sigla'),
+                "cep": formatar_cep(data.get('estabelecimento', {}).get('cep')),
+                "situacao": data.get('estabelecimento', {}).get('situacao_cadastral') or data.get('estabelecimento', {}).get('situacao'),
+                "telefone": formatar_telefone(data.get('estabelecimento', {}).get('ddd1'), data.get('estabelecimento', {}).get('telefone1')),
+                "email": data.get('estabelecimento', {}).get('email')
+            }
+        },
+        {
+            "nome": "ReceitaWS",
+            "url": f"https://www.receitaws.com.br/v1/cnpj/{cnpj_limpo}",
+            "parser": lambda data: {
+                "logradouro": data.get('logradouro'),
+                "numero": data.get('numero'),
+                "complemento": data.get('complemento'),
+                "bairro": data.get('bairro'),
+                "municipio": extrair_nome_campo(data.get('municipio')),
+                "uf": extrair_nome_campo(data.get('uf'), chave_nome='sigla', chave_sigla='sigla'),
+                "cep": formatar_cep(data.get('cep')),
+                "situacao": data.get('situacao'),
+                "telefone": formatar_telefone('', data.get('telefone')), # ReceitaWS pode ter DDD junto
+                "email": data.get('email')
+            }
+        },
+    ]
+
+    # Inicializa com None para garantir que todas as chaves existam
+    resultado = {
+        'logradouro': None, 'numero': None, 'complemento': None, 'bairro': None,
+        'municipio': None, 'uf': None, 'cep': None, 'situacao': None,
+        'telefone': None, 'email': None
+    }
+
+    for api in apis:
+        logging.info(f"Tentando API {api['nome']} para CNPJ {cnpj_limpo}")
+        try:
+            resp = requests.get(api["url"], timeout=10)
+            resp.raise_for_status()
+
+            data = resp.json()
+            if not data:
+                 logging.warning(f"API {api['nome']} retornou dados vazios para CNPJ {cnpj_limpo}")
+                 continue
+
+            dados_api = api["parser"](data)
+
+            # Preenche os campos do resultado APENAS se ainda não estiverem preenchidos
+            for key in resultado.keys():
+                if not resultado[key] and dados_api.get(key):
+                    valor = str(dados_api[key]).strip()
+                    if valor and valor.lower() != 'none': # Evita preencher com "None" literal
+                        resultado[key] = valor
+                        if resultado[key]: # Log apenas se encontrou algo útil
+                            logging.info(f"Campo '{key}' encontrado para CNPJ {cnpj_limpo} via {api['nome']}")
+
+        except requests.exceptions.Timeout:
+            logging.warning(f"Timeout ao consultar API {api['nome']} para CNPJ {cnpj_limpo}")
+        except requests.exceptions.HTTPError as e:
+            if e.response.status_code == 404:
+                 logging.info(f"CNPJ {cnpj_limpo} não encontrado na API {api['nome']} (404)")
+            elif e.response.status_code == 429:
+                 logging.warning(f"Limite de taxa atingido na API {api['nome']} para CNPJ {cnpj_limpo} (429)")
+                 time.sleep(1) # Pausa antes de tentar a próxima
+            else:
+                 logging.error(f"Erro HTTP {e.response.status_code} ao consultar API {api['nome']} para CNPJ {cnpj_limpo}: {e}")
+        except json.JSONDecodeError:
+            response_text = ""
+            try:
+                response_text = resp.text
+            except Exception:
+                response_text = "[Não foi possível ler o texto da resposta]"
+            logging.error(f"Erro ao decodificar JSON da API {api['nome']} para CNPJ {cnpj_limpo}. Resposta: {response_text[:200]}...")
+        except Exception as e:
+            logging.error(f"Erro inesperado ao consultar API {api['nome']} para CNPJ {cnpj_limpo}: {e}", exc_info=True)
+        finally:
+            time.sleep(0.2) # Pequena pausa entre APIs
+
+    # Validação final: Se não encontrou logradouro ou município, considera endereço inválido
+    if not resultado['logradouro'] and not resultado['municipio']:
+        if resultado['situacao'] != 'Inválido':
+            logging.warning(f"Nenhuma API encontrou dados de endereço suficientes para CNPJ {cnpj_limpo}")
+        # Mantém os outros campos que podem ter sido encontrados (situação, tel, email)
+
+    return resultado
+
+def construir_endereco_completo(dados):
+    """Constrói a string de endereço completo a partir dos componentes."""
+    partes = [
+        dados.get('logradouro'),
+        dados.get('numero'),
+        dados.get('complemento'),
+        dados.get('bairro'),
+        dados.get('municipio'),
+        dados.get('uf'),
+        # dados.get('cep') # Opcional incluir CEP na string
+    ]
+    # Filtra partes vazias ou None e junta com vírgula
+    endereco = ', '.join(filter(None, [str(p).strip() for p in partes if p]))
+    return endereco if endereco else None
+
+
+def google_maps_link(endereco_completo=None, dados_endereco=None):
+    """Gera link do Google Maps a partir de uma string de endereço ou componentes."""
+    query = None
+    if dados_endereco:
+        # Tenta construir a query a partir dos componentes para maior precisão
+        partes_query = [
+            dados_endereco.get('logradouro'),
+            dados_endereco.get('numero'),
+            dados_endereco.get('bairro'),
+            dados_endereco.get('municipio'), # Corrigido: Adicionado ')'
+            dados_endereco.get('uf'),        # Corrigido: Adicionado ')'
+            dados_endereco.get('cep')         # Corrigido: Adicionado ')'
+        ]
+        # Filtra partes vazias e junta com vírgula
+        query = ', '.join(filter(None, [str(p).strip() for p in partes_query if p]))
+    elif endereco_completo:
+        query = str(endereco_completo).strip()
+
+    if not query or query.lower() in ["não encontrado", "cnpj inválido", "", ","] or len(re.sub(r'[,\\s]', '', query)) <= 5:
+        return ""
+    try:
+        return f"https://www.google.com/maps/search/?api=1&query={requests.utils.quote(query)}"
+    except Exception:
+        return ""
 
 def buscar_cnpj_no_banco(cnpj):
-    df = carregar_cnpj_enderecos()
-    if "CNPJ" not in df.columns:
-        for col in df.columns:
-            if col.lower() == "cnpj":
-                df = df.rename(columns={col: "CNPJ"})
-    row = df[df["CNPJ"].astype(str) == str(cnpj)]
-    if not row.empty:
-        return row.iloc[0]
+    """Busca um CNPJ específico no banco de dados local."""
+    df_banco = carregar_cnpj_enderecos()
+    if df_banco.empty:
+        return None
+
+    # Padroniza nomes das colunas para busca (case-insensitive)
+    df_banco.columns = [str(col).strip().lower() for col in df_banco.columns]
+
+    if 'cnpj' not in df_banco.columns:
+        logging.error("Coluna 'cnpj' não encontrada no DataFrame carregado do banco.")
+        return None
+
+    # Limpa CNPJ da busca e do DataFrame
+    cnpj_limpo = re.sub(r'\D', '', str(cnpj)).zfill(14)
+    try:
+        # Tenta converter para string antes de aplicar regex
+        df_banco['cnpj'] = df_banco['cnpj'].astype(str).str.replace(r'\D', '', regex=True).str.zfill(14)
+    except Exception as e:
+        logging.error(f"Erro ao limpar coluna CNPJ do banco: {e}")
+        return None # Retorna None se houver erro na limpeza
+
+    resultado = df_banco[df_banco['cnpj'] == cnpj_limpo]
+    if not resultado.empty:
+        # Retorna a primeira linha encontrada como um dicionário
+        # Renomeia colunas para o padrão esperado (primeira letra maiúscula)
+        row_dict = resultado.iloc[0].to_dict()
+        standardized_dict = {
+            'CNPJ': row_dict.get('cnpj'),
+            'Status': row_dict.get('status'),
+            'Cód. Edata': row_dict.get('cód. edata', row_dict.get('cod. edata', row_dict.get('cod_edata'))),
+            'Cód. Mega': row_dict.get('cód. mega', row_dict.get('cod. mega', row_dict.get('cod_mega'))),
+            'Nome': row_dict.get('nome'),
+            'Endereco': row_dict.get('endereco'),
+            'Telefone': row_dict.get('telefone'),
+            'Email': row_dict.get('email'),
+            'Latitude': row_dict.get('latitude'),
+            'Longitude': row_dict.get('longitude'),
+            'Google Maps': row_dict.get('google maps', row_dict.get('googlemaps', row_dict.get('maps')))
+        }
+        # Adiciona quaisquer outras colunas que não foram padronizadas
+        outras_chaves = {k.capitalize(): v for k, v in row_dict.items() if k not in standardized_dict and k not in ['cnpj', 'status', 'cód. edata', 'cod. edata', 'cod_edata', 'cód. mega', 'cod. mega', 'cod_mega', 'nome', 'endereco', 'telefone', 'email', 'latitude', 'longitude', 'google maps', 'googlemaps', 'maps']}
+        standardized_dict.update(outras_chaves)
+        return standardized_dict
     return None
 
 def situacao_cadastral_str(situacao):
-    mapa = {
-        "1": "NULA",
-        "2": "ATIVA",
-        "3": "SUSPENSA",
-        "4": "INAPTA",
-        "8": "BAIXADA",
-        1: "NULA",
-        2: "ATIVA",
-        3: "SUSPENSA",
-        4: "INAPTA",
-        8: "BAIXADA",
-        None: "Desconhecida",
-        "": "Desconhecida",
-        "erro": "Erro",
-        "error": "Erro"
-    }
-    if isinstance(situacao, (int, float)):
-        situacao = int(situacao)
-    s = str(situacao).strip().lower() if situacao is not None else ""
-    if s in mapa:
-        return mapa[s]
-    if s.isdigit() and int(s) in mapa:
-        return mapa[int(s)]
-    if s in ["erro", "error"]:
-        return "Erro"
-    if not s or s in ["none", "nan"]:
-        return "Desconhecida"
-    return s.upper()
+    """Retorna a string da situação cadastral ou 'Não informada'."""
+    if pd.isna(situacao) or situacao is None or str(situacao).strip() == "":
+        return "Não informada"
+    return str(situacao).strip()
 
 def show():
-    # <<< ADICIONADO: Inicializa estado de processamento >>>
     if 'processing_cnpj' not in st.session_state:
         st.session_state.processing_cnpj = False
 
-    st.header("🔎 Busca de CNPJ", divider="rainbow")
-    st.markdown("""
-    <style>
-    .stButton>button {font-weight:bold;}
-    .stDownloadButton>button {font-weight:bold;}
-    </style>
-    """, unsafe_allow_html=True)
-
-    st.markdown("""
-    <div style='background-color:#fff3cd;padding:12px;border-radius:8px;border:1px solid #ffeeba;margin-bottom:18px;'>
-    ⚠️ <b>Aviso importante sobre zeros à esquerda no CNPJ:</b><br>
-    Ao abrir a planilha no Excel, use o assistente de importação e defina a coluna CNPJ como <b>Texto</b> para garantir que os zeros à esquerda sejam preservados.<br>
-    Se abrir diretamente, o Excel pode remover os zeros iniciais automaticamente.
-    </div>
-    """, unsafe_allow_html=True)
+    st.title("📑 Busca de Dados por CNPJ")
+    st.markdown("Busque endereços, coordenadas, situação, telefones e emails a partir de CNPJs.")
 
     # --- Busca em lote ---
-    with st.container():
-        st.subheader("📑 Busca em Lote de CNPJs")
-        st.write("Faça upload de uma planilha com CNPJs. O sistema irá buscar o endereço e as coordenadas de cada um.")
-        arquivo = st.file_uploader("Upload da planilha de CNPJs", type=["xlsx", "xls", "csv"], key="upload_lote")
-        if st.button("🔍 Buscar em lote") and arquivo:
-            if arquivo.name.endswith(".csv"):
-                df = pd.read_csv(arquivo, dtype=str, keep_default_na=False)
-            else:
-                df = pd.read_excel(arquivo, dtype=str)
-            if "CNPJ" in df.columns:
-                df["CNPJ"] = df["CNPJ"].astype(str).str.replace(r'\D', '', regex=True).str.zfill(14)
-            st.info(f"Total de CNPJs: {len(df)}")
-            resultados = []
-            latitudes = []
-            longitudes = []
-            enderecos = []
-            links = []
-            situacoes = []
-            progress = st.progress(0)
-            for idx, row in df.iterrows():
-                cnpj = str(row.get("CNPJ", "")).replace(".", "").replace("/", "").replace("-", "")
-                row_banco = buscar_cnpj_no_banco(cnpj)
-                if row_banco is not None and pd.notnull(row_banco.get("Endereco")) and row_banco.get("Endereco") != "Não encontrado":
-                    endereco = row_banco.get("Endereco")
-                    lat = row_banco.get("Latitude")
-                    lon = row_banco.get("Longitude")
-                    situacao = row_banco.get("Status", "")
-                else:
-                    endereco, situacao = buscar_endereco_cnpj(cnpj)
-                    if endereco:
-                        lat, lon = obter_coordenadas(endereco)
-                    else:
-                        lat, lon = None, None
-                enderecos.append(endereco or "Não encontrado")
-                situacoes.append(situacao_cadastral_str(situacao))
-                links.append(google_maps_link(endereco) if endereco else "")
-                latitudes.append(lat)
-                longitudes.append(lon)
-                progress.progress((idx+1)/len(df), text=f"Processando {idx+1}/{len(df)}")
-            progress.empty()
-            df_result = df.copy()
-            df_result["Endereço"] = enderecos
-            df_result["Situação Cadastral"] = situacoes
-            df_result["Google Maps"] = links
-            df_result["Latitude"] = latitudes
-            df_result["Longitude"] = longitudes
-            # Garante ordem das colunas
-            colunas = [
-                "CNPJ", "Situação Cadastral", "Endereço", "Google Maps", "Latitude", "Longitude"
-            ]
-            outras_colunas = [c for c in df_result.columns if c not in colunas]
-            df_result = df_result[colunas + outras_colunas]
-            df_result = df_result.rename(columns={
-                "Endereço": "Endereco",
-                "Situação Cadastral": "Status"
-            })
-            # Remove colunas duplicadas mantendo só a primeira ocorrência
-            df_result = df_result.loc[:, ~df_result.columns.duplicated()]
-            st.success("Processamento concluído!")
-            st.dataframe(df_result, use_container_width=True)
-            salvar_cnpj_enderecos(df_result)
-            # Exibir todos os pontos no mapa se houver coordenadas
-            df_map = df_result.dropna(subset=["Latitude", "Longitude"]).copy()
-            df_map["Latitude"] = pd.to_numeric(df_map["Latitude"], errors="coerce")
-            df_map["Longitude"] = pd.to_numeric(df_map["Longitude"], errors="coerce")
-            df_map = df_map.dropna(subset=["Latitude", "Longitude"])
-            if not df_map.empty:
-                st.map(df_map.rename(columns={"Latitude": "latitude", "Longitude": "longitude"}))
-            output = io.BytesIO()
-            with pd.ExcelWriter(output, engine='openpyxl') as writer:
-                df_result.to_excel(writer, index=False)
-                ws = writer.sheets['Sheet1']
-                # Força a coluna CNPJ como texto (assume que CNPJ é a primeira coluna)
-                for cell in ws[ws.min_column]:
-                    if cell.row == 1:
-                        continue  # pula o cabeçalho
-                    cell.number_format = '@'
-            output.seek(0)
-            st.download_button(
-                label="Baixar resultado em Excel",
-                data=output.getvalue(),
-                file_name="cnpjs_com_endereco_coordenadas.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            )
-            # Novo: Selecionar CNPJ para visualizar detalhes
-            cnpjs_disponiveis = df_result["CNPJ"].dropna().astype(str).unique().tolist()
-            if cnpjs_disponiveis:
-                cnpj_sel = st.selectbox("Selecione um CNPJ para ver detalhes", cnpjs_disponiveis)
-                row = df_result[df_result["CNPJ"].astype(str) == cnpj_sel].iloc[0]
-                endereco = row.get("Endereço", "")
-                lat = row.get("Latitude", None)
-                lon = row.get("Longitude", None)
-                link = google_maps_link(endereco) if endereco else ""
-                st.markdown(f"<b>Endereço:</b> {endereco}", unsafe_allow_html=True)
-                st.markdown(f"<b>Google Maps:</b> <a href='{link}' target='_blank'>{link}</a>", unsafe_allow_html=True)
-                if pd.notnull(lat) and pd.notnull(lon):
-                    st.info(f"Coordenadas: {lat}, {lon}")
-                    df_temp = pd.DataFrame({"latitude": [lat], "longitude": [lon]})
-                    df_temp = df_temp.dropna(subset=["latitude", "longitude"])
-                    df_temp["latitude"] = pd.to_numeric(df_temp["latitude"], errors="coerce")
-                    df_temp["longitude"] = pd.to_numeric(df_temp["longitude"], errors="coerce")
-                    if not df_temp.empty:
-                        st.map(df_temp)
-                else:
-                    st.warning("Coordenadas não encontradas para este endereço.")
+    with st.container(border=True):
+        st.subheader("📤 Busca em Lote")
+        st.write("Faça upload de uma planilha (.xlsx, .xls, .csv) com uma coluna chamada 'CNPJ'.")
+        arquivo = st.file_uploader("Upload da planilha", type=["xlsx", "xls", "csv"], key="upload_lote")
 
-    # --- Edição dos dados salvos ---
+        processar_lote = st.button(
+            "⚙️ Processar Planilha",
+            key="btn_buscar_lote",
+            disabled=st.session_state.processing_cnpj or arquivo is None,
+            help="Busca dados para todos os CNPJs da planilha, priorizando o banco local."
+        )
+
+        if processar_lote and arquivo:
+            st.session_state.processing_cnpj = True
+            st.rerun()
+
+        if st.session_state.processing_cnpj and arquivo:
+            try:
+                if arquivo.name.endswith(".csv"):
+                    df = pd.read_csv(arquivo, dtype=str, keep_default_na=False)
+                else:
+                    df = pd.read_excel(arquivo, dtype=str)
+
+                # Encontra coluna CNPJ (case-insensitive e strip)
+                cnpj_col = next((col for col in df.columns if str(col).strip().lower() == 'cnpj'), None)
+                if not cnpj_col:
+                    st.error("Coluna 'CNPJ' não encontrada. Verifique o nome da coluna.")
+                    st.session_state.processing_cnpj = False
+                    st.stop()
+
+                # Renomeia para 'CNPJ' padrão, limpa e remove duplicados
+                df = df.rename(columns={cnpj_col: "CNPJ"})
+                df["CNPJ"] = df["CNPJ"].astype(str).str.replace(r'\D', '', regex=True).str.zfill(14)
+                df = df.drop_duplicates(subset=["CNPJ"])
+                df = df[df["CNPJ"].str.len() == 14] # Garante que só CNPJs válidos prossigam
+                total_cnpjs = len(df)
+
+                if total_cnpjs == 0:
+                    st.warning("Nenhum CNPJ válido encontrado na planilha após limpeza.")
+                    st.session_state.processing_cnpj = False
+                    st.stop()
+
+                st.info(f"Iniciando processamento de {total_cnpjs} CNPJs únicos e válidos...")
+
+                resultados = []
+                progress = st.progress(0)
+                status_text = st.empty()
+                cnpjs_processados = 0
+
+                for idx, row in df.iterrows():
+                    cnpj = row["CNPJ"]
+                    status_text.text(f"Processando {cnpjs_processados + 1}/{total_cnpjs}: {cnpj}")
+
+                    # 1. Buscar no banco
+                    row_banco = buscar_cnpj_no_banco(cnpj)
+                    dados_finais = {
+                        'CNPJ': cnpj,
+                        'Endereco': None, 'Status': None, 'Telefone': None, 'Email': None,
+                        'Latitude': None, 'Longitude': None, 'Google Maps': None
+                    }
+                    # Mantém outras colunas originais
+                    for col in df.columns:
+                         if col != 'CNPJ':
+                             dados_finais[col] = row.get(col)
+
+                    if row_banco:
+                        endereco_banco = row_banco.get("Endereco")
+                        # Usa dados do banco se endereço for válido
+                        if pd.notnull(endereco_banco) and str(endereco_banco).strip().lower() not in ["não encontrado", "cnpj inválido", "", ","]:
+                            dados_finais.update({
+                                'Endereco': endereco_banco,
+                                'Status': row_banco.get("Status"),
+                                'Telefone': row_banco.get("Telefone"),
+                                'Email': row_banco.get("Email"),
+                                'Latitude': row_banco.get("Latitude"),
+                                'Longitude': row_banco.get("Longitude"),
+                                'Google Maps': google_maps_link(endereco_banco)
+                            })
+                            logging.info(f"Dados para {cnpj} encontrados no banco.")
+
+                    # 2. Se não achou no banco ou endereço inválido, busca na API
+                    if not dados_finais['Endereco']:
+                        logging.info(f"Buscando dados na API para {cnpj}...")
+                        resultado_api = buscar_endereco_cnpj(cnpj)
+                        endereco_api = resultado_api.get('endereco')
+                        situacao_api = resultado_api.get('situacao')
+                        telefone_api = resultado_api.get('telefone')
+                        email_api = resultado_api.get('email')
+
+                        dados_finais['Status'] = situacao_cadastral_str(situacao_api)
+                        dados_finais['Telefone'] = telefone_api
+                        dados_finais['Email'] = email_api
+
+                        if endereco_api:
+                            dados_finais['Endereco'] = endereco_api
+                            lat_api, lon_api = obter_coordenadas(endereco_api)
+                            dados_finais['Latitude'] = lat_api
+                            dados_finais['Longitude'] = lon_api
+                            dados_finais['Google Maps'] = google_maps_link(endereco_api)
+                        else:
+                            dados_finais['Endereco'] = "Não encontrado"
+                            dados_finais['Latitude'] = None
+                            dados_finais['Longitude'] = None
+                            dados_finais['Google Maps'] = ""
+                            # Mantém Status, Telefone, Email que podem ter vindo da API
+
+                    resultados.append(dados_finais)
+                    cnpjs_processados += 1
+                    progress.progress(cnpjs_processados / total_cnpjs)
+                    # time.sleep(0.05) # Pausa mínima opcional
+
+                progress.empty()
+                status_text.empty()
+
+                df_result = pd.DataFrame(resultados)
+
+                # Garante a ordem das colunas principais e mantém as outras
+                colunas_principais = [
+                    "CNPJ", "Status", "Endereco", "Telefone", "Email",
+                    "Google Maps", "Latitude", "Longitude"
+                ]
+                outras_colunas_originais = [c for c in df.columns if c != 'CNPJ']
+                colunas_finais = colunas_principais + [c for c in outras_colunas_originais if c not in colunas_principais]
+                # Adiciona colunas que podem ter sido criadas (caso raro)
+                colunas_finais += [c for c in df_result.columns if c not in colunas_finais]
+
+                df_result = df_result[colunas_finais]
+                df_result = df_result.loc[:, ~df_result.columns.duplicated()]
+
+                st.success("Processamento concluído!")
+                st.dataframe(df_result, use_container_width=True, height=300)
+
+                # Salva/Atualiza no banco de dados
+                salvar_cnpj_enderecos(df_result)
+                st.info(f"{len(df_result)} resultados salvos/atualizados no banco de dados local.")
+
+                # Exibir mapa
+                df_map = df_result.dropna(subset=["Latitude", "Longitude"]).copy()
+                if not df_map.empty:
+                    df_map["Latitude"] = pd.to_numeric(df_map["Latitude"], errors="coerce")
+                    df_map["Longitude"] = pd.to_numeric(df_map["Longitude"], errors="coerce")
+                    df_map = df_map.dropna(subset=["Latitude", "Longitude"])
+                    if not df_map.empty:
+                        st.map(df_map.rename(columns={"Latitude": "latitude", "Longitude": "longitude"}))
+                    else:
+                        st.write("Nenhum CNPJ com coordenadas válidas para exibir no mapa.")
+                else:
+                    st.write("Nenhum CNPJ com coordenadas válidas para exibir no mapa.")
+
+                # Botão de download
+                output = io.BytesIO()
+                with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                    df_result.to_excel(writer, index=False, sheet_name='CNPJs')
+                    # Formata coluna CNPJ como texto no Excel
+                    ws = writer.sheets['CNPJs']
+                    try:
+                        # Encontra a coluna CNPJ (pode não ser a primeira)
+                        cnpj_col_idx = df_result.columns.get_loc('CNPJ') + 1
+                        cnpj_col_letter = openpyxl.utils.get_column_letter(cnpj_col_idx)
+                        for cell in ws[cnpj_col_letter]:
+                            if cell.row > 1: # Pula cabeçalho
+                                cell.number_format = '@' # Formato Texto
+                    except Exception as e_format:
+                        logging.warning(f"Erro ao formatar coluna CNPJ no Excel: {e_format}")
+                output.seek(0)
+                st.download_button(
+                    label="💾 Baixar Resultado em Excel",
+                    data=output.getvalue(),
+                    file_name="cnpjs_com_dados.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
+
+                st.toast("Busca em lote finalizada!")
+                st.session_state.processing_cnpj = False
+                time.sleep(1)
+                st.rerun()
+
+            except Exception as e:
+                st.error(f"Ocorreu um erro durante o processamento em lote: {e}")
+                logging.error(f"Erro no processamento em lote: {e}", exc_info=True)
+                st.session_state.processing_cnpj = False
+                st.rerun()
+
+    # --- Gerenciamento dos dados salvos ---
     st.divider()
-    with st.container():
-        st.subheader("📝 Editar CNPJs salvos no banco de dados")
-        df_cnpj = carregar_cnpj_enderecos()
-        # Padronizar nomes de colunas e garantir todas as colunas relevantes
-        colunas_padrao = [
-            'CNPJ', 'Status', 'Cód. Edata', 'Cód. Mega', 'Nome',
-            'Endereco', 'Latitude', 'Longitude', 'Google Maps'
-        ]
-        if not df_cnpj.empty:
-            # Renomear variações para padrão
-            col_renomear = {}
+    with st.container(border=True):
+        st.subheader("📝 Gerenciar CNPJs Salvos")
+        df_cnpj_raw = carregar_cnpj_enderecos()
+
+        if df_cnpj_raw.empty:
+            st.info("Nenhum CNPJ salvo no banco de dados ainda.")
+        else:
+            # Padroniza e garante colunas
+            df_cnpj = df_cnpj_raw.copy()
+            df_cnpj.columns = [str(col).strip() for col in df_cnpj.columns]
+            col_renomear_lower = {}
             for col in df_cnpj.columns:
-                if col.lower() == 'cnpj' and col != 'CNPJ':
-                    col_renomear[col] = 'CNPJ'
-                if col.lower() == 'status' and col != 'Status':
-                    col_renomear[col] = 'Status'
-                if col.lower() in ['cód. edata', 'cod_edata', 'cod. edata'] and col != 'Cód. Edata':
-                    col_renomear[col] = 'Cód. Edata'
-                if col.lower() in ['cód. mega', 'cod_mega', 'cod. mega'] and col != 'Cód. Mega':
-                    col_renomear[col] = 'Cód. Mega'
-                if col.lower() == 'nome' and col != 'Nome':
-                    col_renomear[col] = 'Nome'
-                if col.lower() == 'endereco' and col != 'Endereco':
-                    col_renomear[col] = 'Endereco'
-                if col.lower() == 'latitude' and col != 'Latitude':
-                    col_renomear[col] = 'Latitude'
-                if col.lower() == 'longitude' and col != 'Longitude':
-                    col_renomear[col] = 'Longitude'
-                if col.lower() in ['google maps', 'googlemaps', 'maps'] and col != 'Google Maps':
-                    col_renomear[col] = 'Google Maps'
-            if col_renomear:
-                df_cnpj = df_cnpj.rename(columns=col_renomear)
-            # Remover colunas duplicadas (mantém só a primeira ocorrência)
+                col_lower = col.lower()
+                if col_lower == 'cnpj' and col != 'CNPJ': col_renomear_lower[col] = 'CNPJ'
+                elif col_lower == 'status' and col != 'Status': col_renomear_lower[col] = 'Status'
+                elif col_lower in ['cód. edata', 'cod_edata', 'cod. edata'] and col != 'Cód. Edata': col_renomear_lower[col] = 'Cód. Edata'
+                elif col_lower in ['cód. mega', 'cod_mega', 'cod. mega'] and col != 'Cód. Mega': col_renomear_lower[col] = 'Cód. Mega'
+                elif col_lower == 'nome' and col != 'Nome': col_renomear_lower[col] = 'Nome'
+                elif col_lower == 'endereco' and col != 'Endereco': col_renomear_lower[col] = 'Endereco'
+                elif col_lower == 'telefone' and col != 'Telefone': col_renomear_lower[col] = 'Telefone'
+                elif col_lower == 'email' and col != 'Email': col_renomear_lower[col] = 'Email'
+                elif col_lower == 'latitude' and col != 'Latitude': col_renomear_lower[col] = 'Latitude'
+                elif col_lower == 'longitude' and col != 'Longitude': col_renomear_lower[col] = 'Longitude'
+                elif col_lower in ['google maps', 'googlemaps', 'maps'] and col != 'Google Maps': col_renomear_lower[col] = 'Google Maps'
+
+            if col_renomear_lower:
+                df_cnpj = df_cnpj.rename(columns=col_renomear_lower)
+
             df_cnpj = df_cnpj.loc[:, ~df_cnpj.columns.duplicated()]
-            # Garantir todas as colunas padrão
+
+            colunas_padrao = [
+                'CNPJ', 'Status', 'Cód. Edata', 'Cód. Mega', 'Nome',
+                'Endereco', 'Telefone', 'Email',
+                'Latitude', 'Longitude', 'Google Maps'
+            ]
             for col in colunas_padrao:
                 if col not in df_cnpj.columns:
                     df_cnpj[col] = ''
-            # Reordenar colunas
-            df_cnpj = df_cnpj[[col for col in colunas_padrao if col in df_cnpj.columns]]
-        if not df_cnpj.empty:
-            # Filtros e ordenação igual pedidos
-            colunas_ordenaveis = [col for col in df_cnpj.columns if col not in ["Sel."]]
-            coluna_ordem = st.selectbox("Ordenar por", colunas_ordenaveis, index=0, key="ordem_cnpj")
-            if coluna_ordem in df_cnpj.columns:
-                df_cnpj = df_cnpj.sort_values(by=coluna_ordem, key=lambda x: x.astype(str)).reset_index(drop=True)
-            status_filtro = st.selectbox("Status de coordenadas", ["Todos", "Com coordenadas", "Sem coordenadas"], key="status_coord_cnpj")
+
+            cols_existentes_ordenadas = [col for col in colunas_padrao if col in df_cnpj.columns]
+            outras_cols = [col for col in df_cnpj.columns if col not in colunas_padrao]
+            df_cnpj = df_cnpj[cols_existentes_ordenadas + outras_cols]
+
+            # Limpa CNPJ para garantir consistência na chave do editor
+            if 'CNPJ' in df_cnpj.columns:
+                 df_cnpj['CNPJ'] = df_cnpj['CNPJ'].astype(str).str.replace(r'\D', '', regex=True).str.zfill(14)
+            else:
+                 st.error("Coluna CNPJ não encontrada após padronização. Não é possível editar.")
+                 st.stop()
+
+            # Filtros
+            st.write("Filtre e edite os dados salvos:")
+            col_filtros1, col_filtros2 = st.columns(2)
+            with col_filtros1:
+                filtro_texto = st.text_input("Filtrar por qualquer campo", key="filtro_cnpj_texto")
+            with col_filtros2:
+                # Garante que Status existe e não tem nulos para o filtro
+                status_options = []
+                if 'Status' in df_cnpj.columns:
+                    status_options = df_cnpj['Status'].fillna('Não informada').unique().tolist()
+                filtro_status = st.multiselect("Filtrar por Status", options=status_options, key="filtro_cnpj_status")
+
             df_filtrado = df_cnpj.copy()
-            if status_filtro == "Com coordenadas":
-                df_filtrado = df_filtrado[df_filtrado['Latitude'].notnull() & df_filtrado['Longitude'].notnull()]
-            elif status_filtro == "Sem coordenadas":
-                df_filtrado = df_filtrado[df_filtrado['Latitude'].isnull() | df_filtrado['Longitude'].isnull()]
-            filtro = st.text_input("Buscar CNPJ (qualquer campo)", key="busca_cnpj")
-            if filtro:
-                filtro_lower = filtro.lower()
-                df_filtrado = df_filtrado[df_filtrado.apply(lambda row: row.astype(str).str.lower().str.contains(filtro_lower).any(), axis=1)]
-            st.write("Você pode filtrar, editar e exportar os dados dos CNPJs salvos:")
+            if filtro_texto:
+                # Busca em todas as colunas convertidas para string
+                df_filtrado = df_filtrado[df_filtrado.apply(lambda row: row.astype(str).str.contains(filtro_texto, case=False, na=False).any(), axis=1)]
+            if filtro_status:
+                if 'Status' in df_filtrado.columns:
+                    df_filtrado = df_filtrado[df_filtrado['Status'].fillna('Não informada').isin(filtro_status)]
+
+            st.info(f"{len(df_filtrado)} de {len(df_cnpj)} CNPJs exibidos após filtros.")
+
+            # Editor de dados
             df_editado = st.data_editor(
                 df_filtrado,
                 num_rows="dynamic",
                 use_container_width=True,
                 key="cnpj_editor",
                 column_order=df_cnpj.columns.tolist(),
-                hide_index=True
+                hide_index=True,
+                # Define a coluna CNPJ como índice (não editável) para estabilidade
+                # disabled=["CNPJ"], # Desabilitar edição do CNPJ
+                column_config={
+                    "Google Maps": st.column_config.LinkColumn("Google Maps", display_text="Abrir Mapa"),
+                    "Latitude": st.column_config.NumberColumn(format="%.6f"),
+                    "Longitude": st.column_config.NumberColumn(format="%.6f"),
+                }
             )
-            if not df_editado.equals(df_filtrado):
-                # Atualiza o DataFrame original com as edições feitas no filtrado
-                df_update = df_cnpj.copy()
-                df_update.update(df_editado)
-                salvar_cnpj_enderecos(df_update)
-                st.success("Alterações salvas no banco de dados!")
-        else:
-            st.info("Nenhum CNPJ salvo no banco de dados ainda.")
-        if st.button("Limpar dados salvos"):
-            limpar_cnpj_enderecos()
-            st.success("Dados salvos foram limpos com sucesso!")
-        # Botão para buscar endereço Google Maps e coordenadas dos que não têm endereço OU estão como 'CNPJ ...'
-        if not df_cnpj.empty:
-            mask_nao_encontrado = (
-                df_cnpj["Endereco"].isnull() |
-                (df_cnpj["Endereco"] == "") |
-                (df_cnpj["Endereco"] == "Não encontrado") |
-                df_cnpj["Endereco"].astype(str).str.startswith('CNPJ')
-            )
-            df_nao_encontrado = df_cnpj[mask_nao_encontrado].copy()
-            total = len(df_nao_encontrado)
-            if st.button("Buscar Endereço Google Maps e Coordenadas para não localizados", key="btn_gmaps_coord"):
-                if total == 0:
-                    st.info("Todos os CNPJs já possuem endereço.")
-                else:
-                    progress = st.progress(0, text="Buscando endereços e coordenadas...")
-                    for idx, (i, row) in enumerate(df_nao_encontrado.iterrows()):
-                        cnpj = str(row.get("CNPJ", "")).replace(".", "").replace("/", "").replace("-", "")
-                        endereco, situacao = buscar_endereco_cnpj(cnpj)
-                        if not endereco:
-                            endereco = f"CNPJ {cnpj}"  # fallback
-                        link = google_maps_link(endereco)
-                        lat, lon = obter_coordenadas(endereco)
-                        df_cnpj.at[i, "Endereco"] = endereco
-                        df_cnpj.at[i, "Status"] = situacao_cadastral_str(situacao)
-                        df_cnpj.at[i, "Google Maps"] = link
-                        df_cnpj.at[i, "Latitude"] = lat
-                        df_cnpj.at[i, "Longitude"] = lon
-                        progress.progress((idx+1)/total, text=f"Processando {idx+1}/{total}")
-                    progress.empty()
-                    salvar_cnpj_enderecos(df_cnpj)
-                    st.success("Endereços e coordenadas buscados para os não localizados!")
-                    st.rerun()
-        # Botão para buscar apenas coordenadas para endereços já localizados e sem coordenadas
-        if not df_cnpj.empty:
-            if st.button("Buscar Coordenadas para Endereços já Localizados", key="btn_coord_only"):
-                mask_sem_coord = (
-                    df_cnpj["Endereco"].notnull() &
-                    (df_cnpj["Endereco"] != "") &
-                    (df_cnpj["Endereco"] != "Não encontrado") &
-                    (df_cnpj["Latitude"].isnull() | df_cnpj["Longitude"].isnull())
+
+            # Botões de Ação
+            col_botoes1, col_botoes2, col_botoes3 = st.columns(3)
+            with col_botoes1:
+                if st.button("💾 Salvar Edições", key="btn_salvar_edicoes", help="Salva as alterações feitas na tabela acima."):
+                    # Identifica as linhas que foram realmente editadas comparando com o df_filtrado original
+                    # Usa o CNPJ como índice para comparação segura
+                    try:
+                        df_filtrado_idx = df_filtrado.set_index('CNPJ')
+                        df_editado_idx = df_editado.set_index('CNPJ')
+
+                        # Compara os dataframes alinhados pelo índice
+                        diff_mask = (df_filtrado_idx != df_editado_idx).any(axis=1)
+                        cnpjs_alterados = diff_mask[diff_mask].index.tolist()
+
+                        if not cnpjs_alterados:
+                            st.warning("Nenhuma alteração detectada para salvar.")
+                        else:
+                            # Pega as linhas alteradas do df_editado
+                            df_alterado = df_editado_idx.loc[cnpjs_alterados]
+
+                            # Atualiza o df_cnpj original (que contém todos os dados)
+                            df_cnpj_idx = df_cnpj.set_index('CNPJ')
+                            df_cnpj_idx.update(df_alterado)
+                            df_cnpj_atualizado = df_cnpj_idx.reset_index()
+
+                            # Reaplicar a ordem original das colunas
+                            df_cnpj_atualizado = df_cnpj_atualizado[df_cnpj.columns]
+
+                            salvar_cnpj_enderecos(df_cnpj_atualizado)
+                            st.success(f"{len(cnpjs_alterados)} CNPJs atualizados no banco de dados!")
+                            st.rerun()
+
+                    except Exception as e_save:
+                        st.error(f"Erro ao salvar edições: {e_save}")
+                        logging.error(f"Erro ao salvar edições do data_editor: {e_save}", exc_info=True)
+
+            with col_botoes2:
+                # Botão para buscar/atualizar dados para não localizados ou inválidos
+                mask_atualizar = (
+                    df_cnpj["Endereco"].isnull() |
+                    (df_cnpj["Endereco"] == "") |
+                    (df_cnpj["Endereco"].astype(str).str.strip().isin(["Não encontrado", "CNPJ inválido", ","])) |
+                    (df_cnpj["Latitude"].isnull()) | (df_cnpj["Longitude"].isnull()) # Inclui os sem coordenadas
                 )
-                df_sem_coord = df_cnpj[mask_sem_coord].copy()
-                total = len(df_sem_coord)
-                if total == 0:
-                    st.info("Todos os endereços já possuem coordenadas.")
+                # Garante que CNPJ não seja nulo para processamento
+                mask_atualizar &= df_cnpj["CNPJ"].notnull() & (df_cnpj["CNPJ"] != "")
+
+                df_para_atualizar = df_cnpj[mask_atualizar].copy()
+                total_atualizar = len(df_para_atualizar)
+                label_btn_atualizar = f"🔄 Atualizar Dados ({total_atualizar})"
+                if st.button(label_btn_atualizar, key="btn_buscar_faltantes", disabled=(total_atualizar == 0), help="Busca/Atualiza Endereço, Coords, Tel e Email para CNPJs marcados como 'Não encontrado', 'Inválido' ou sem coordenadas."):
+                    progress = st.progress(0, text="Atualizando dados...")
+                    cnpjs_atualizados_count = 0
+                    df_cnpj_atualizado = df_cnpj.copy() # Trabalha em uma cópia
+
+                    for idx, (i, row) in enumerate(df_para_atualizar.iterrows()):
+                        cnpj = row["CNPJ"]
+                        progress.progress((idx+1)/total_atualizar, text=f"Processando {idx+1}/{total_atualizar}: {cnpj}")
+
+                        resultado_api = buscar_endereco_cnpj(cnpj)
+                        endereco = resultado_api.get('endereco')
+                        situacao = resultado_api.get('situacao')
+                        telefone = resultado_api.get('telefone')
+                        email = resultado_api.get('email')
+                        link = ""
+                        lat, lon = None, None
+
+                        # Atualiza o DataFrame copiado na linha original 'i'
+                        df_cnpj_atualizado.loc[i, "Status"] = situacao_cadastral_str(situacao)
+                        df_cnpj_atualizado.loc[i, "Telefone"] = telefone or ""
+                        df_cnpj_atualizado.loc[i, "Email"] = email or ""
+
+                        if endereco:
+                            link = google_maps_link(endereco)
+                            lat, lon = obter_coordenadas(endereco)
+                            df_cnpj_atualizado.loc[i, "Endereco"] = endereco
+                            df_cnpj_atualizado.loc[i, "Google Maps"] = link
+                            df_cnpj_atualizado.loc[i, "Latitude"] = lat
+                            df_cnpj_atualizado.loc[i, "Longitude"] = lon
+                        else:
+                            df_cnpj_atualizado.loc[i, "Endereco"] = "Não encontrado"
+                            df_cnpj_atualizado.loc[i, "Google Maps"] = ""
+                            df_cnpj_atualizado.loc[i, "Latitude"] = None
+                            df_cnpj_atualizado.loc[i, "Longitude"] = None
+
+                        cnpjs_atualizados_count += 1
+                        # time.sleep(0.05) # Pausa opcional
+
+                    progress.empty()
+                    if cnpjs_atualizados_count > 0:
+                        salvar_cnpj_enderecos(df_cnpj_atualizado)
+                        st.success(f"Dados buscados/atualizados para {cnpjs_atualizados_count} CNPJs!")
+                    else:
+                        st.info("Nenhum CNPJ precisava de atualização.")
+                    st.rerun()
+
+            with col_botoes3:
+                 # Botão Limpar dados salvos
+                if st.button("🗑️ Limpar Banco", key="btn_limpar_cnpjs", type="primary", help="Apaga TODOS os CNPJs salvos localmente."):
+                    # Adiciona confirmação extra
+                    if 'confirm_delete' not in st.session_state:
+                        st.session_state.confirm_delete = False
+
+                    if st.session_state.confirm_delete:
+                        limpar_cnpj_enderecos()
+                        st.success("Banco de dados de CNPJs limpo!")
+                        st.session_state.confirm_delete = False # Reseta confirmação
+                        st.rerun()
+                    else:
+                        st.warning("Clique novamente para confirmar a exclusão de TODOS os dados.")
+                        st.session_state.confirm_delete = True # Pede confirmação no próximo clique
                 else:
-                    progress = st.progress(0, text="Buscando coordenadas...")
-                    for idx, (i, row) in enumerate(df_sem_coord.iterrows()):
-                        endereco = row.get("Endereco", "")
-                        lat, lon = obter_coordenadas(endereco)
-                        df_cnpj.at[i, "Latitude"] = lat
-                        df_cnpj.at[i, "Longitude"] = lon
-                        progress.progress((idx+1)/total, text=f"Processando {idx+1}/{total}")
-                    progress.empty()
-                    salvar_cnpj_enderecos(df_cnpj)
-                    st.success("Coordenadas buscadas para todos os endereços já localizados!")
-                    st.rerun()
-        # Botão para reprocessar endereços que estão como 'CNPJ ...' (endereços não encontrados)
-        if not df_cnpj.empty:
-            mask_cnpj_falso = df_cnpj['Endereco'].astype(str).str.startswith('CNPJ')
-            if mask_cnpj_falso.any():
-                if st.button("Reprocessar endereços não encontrados (CNPJ ...)", key="btn_reprocessar_cnpj_falso"):
-                    total = mask_cnpj_falso.sum()
-                    progress = st.progress(0, text="Reprocessando endereços...")
-                    for idx, (i, row) in enumerate(df_cnpj[mask_cnpj_falso].iterrows()):
-                        cnpj = str(row.get("CNPJ", "")).replace(".", "").replace("/", "").replace("-", "")
-                        endereco, situacao = buscar_endereco_cnpj(cnpj)
-                        if not endereco:
-                            endereco = f"CNPJ {cnpj}"  # fallback
-                        link = google_maps_link(endereco)
-                        lat, lon = obter_coordenadas(endereco)
-                        df_cnpj.at[i, "Endereco"] = endereco
-                        df_cnpj.at[i, "Status"] = situacao_cadastral_str(situacao)
-                        df_cnpj.at[i, "Google Maps"] = link
-                        df_cnpj.at[i, "Latitude"] = lat
-                        df_cnpj.at[i, "Longitude"] = lon
-                        progress.progress((idx+1)/total, text=f"Processando {idx+1}/{total}")
-                    progress.empty()
-                    salvar_cnpj_enderecos(df_cnpj)
-                    st.success("Reprocessamento concluído!")
-                    st.rerun()
-        # Botão para limpar endereços e coordenadas que estão como (None, None)
-        if not df_cnpj.empty:
-            mask_none_tuple = df_cnpj['Endereco'].astype(str).isin([
-                '(None, None)', 'None, None', "('None', 'None')", 'None', "(None,None)", "('None',None)", "(None,'None')"
-            ])
-            if mask_none_tuple.any():
-                if st.button("Limpar endereços e coordenadas (None, None)", key="btn_limpar_none_tuple"):
-                    for i in df_cnpj[mask_none_tuple].index:
-                        df_cnpj.at[i, "Endereco"] = ""
-                        df_cnpj.at[i, "Latitude"] = ""
-                        df_cnpj.at[i, "Longitude"] = ""
-                        df_cnpj.at[i, "Google Maps"] = ""
-                    salvar_cnpj_enderecos(df_cnpj)
-                    st.success("Endereços e coordenadas (None, None) limpos!")
-                    st.rerun()
+                     st.session_state.confirm_delete = False # Reseta se o botão não for clicado
 
     # --- Busca individual ---
     st.divider()
-    with st.container():
-        st.subheader("🔎 Busca Individual de CNPJ")
-        st.write("Digite um CNPJ para buscar o endereço e as coordenadas.")
-        cnpj = st.text_input("CNPJ", max_chars=18, help="Apenas números, pontos, barras e traços serão ignorados.")
-        col1, col2 = st.columns([1, 5])
-        with col1:
-            buscar = st.button("Buscar", key="buscar_individual")
-        if buscar and cnpj:
-            cnpj_limpo = cnpj.replace(".", "").replace("/", "").replace("-", "")
-            # Buscar no banco antes
-            row_banco = buscar_cnpj_no_banco(cnpj_limpo)
-            if row_banco is not None and pd.notnull(row_banco.get("Endereco")) and row_banco.get("Endereco") != "Não encontrado":
-                endereco = row_banco.get("Endereco")
-                lat = row_banco.get("Latitude")
-                lon = row_banco.get("Longitude")
-                situacao = row_banco.get("Status", "")
+    with st.container(border=True):
+        st.subheader("👤 Busca Individual")
+        cnpj_input = st.text_input("Digite o CNPJ", max_chars=18, help="Pontos, barras e traços são ignorados.", key="cnpj_individual")
+        buscar_individual = st.button("🔍 Buscar CNPJ", key="buscar_individual_btn")
+
+        if buscar_individual and cnpj_input:
+            cnpj_limpo = re.sub(r'\\D', '', cnpj_input).zfill(14)
+            if len(cnpj_limpo) != 14:
+                st.error("CNPJ inválido. Por favor, digite um CNPJ com 14 dígitos.")
             else:
-                with st.spinner("Buscando endereço..."):
-                    endereco, situacao = buscar_endereco_cnpj(cnpj_limpo)
-                if endereco:
-                    with st.spinner("Buscando coordenadas..."):
-                        lat, lon = obter_coordenadas(endereco)
+                # 1. Buscar no banco (ainda busca pelo endereço completo por enquanto)
+                row_banco = buscar_cnpj_no_banco(cnpj_limpo)
+                dados_endereco = {}
+                endereco_completo = None
+                situacao, telefone, email = None, None, None
+                lat, lon = None, None
+                fonte = ""
+
+                if row_banco:
+                    endereco_banco = row_banco.get("Endereco")
+                    if pd.notnull(endereco_banco) and str(endereco_banco).strip().lower() not in ["não encontrado", "cnpj inválido", "", ","]:
+                        # Se achou no banco, usa os dados de lá.
+                        # Idealmente, o banco também teria os campos separados, mas por ora usamos o que tem.
+                        endereco_completo = endereco_banco
+                        situacao = row_banco.get("Status")
+                        telefone = row_banco.get("Telefone")
+                        email = row_banco.get("Email")
+                        lat = row_banco.get("Latitude")
+                        lon = row_banco.get("Longitude")
+                        # Tenta preencher dados_endereco com base na string, se possível (simplificado)
+                        dados_endereco = {'endereco_completo': endereco_completo} # Placeholder
+                        fonte = "Banco de Dados Local"
+                        st.info(f"Dados carregados do {fonte}.")
+
+                # 2. Se não achou no banco ou endereço inválido, busca na API
+                if not endereco_completo:
+                    with st.spinner("Buscando dados do CNPJ via API..."):
+                        dados_endereco = buscar_endereco_cnpj(cnpj_limpo) # Agora retorna o dict completo
+
+                    situacao = dados_endereco.get('situacao')
+                    telefone = dados_endereco.get('telefone')
+                    email = dados_endereco.get('email')
+                    fonte = "API Externa"
+
+                    # Constrói o endereço completo a partir dos componentes para obter coordenadas
+                    endereco_completo = construir_endereco_completo(dados_endereco)
+
+                    if endereco_completo:
+                        with st.spinner("Buscando coordenadas..."):
+                            lat, lon = obter_coordenadas(endereco_completo)
+                    else:
+                        lat, lon = None, None
+                        # Se API retornou inválido, usa isso
+                        if dados_endereco.get('situacao') == 'Inválido':
+                            situacao = 'Inválido'
+
+                # Exibe os resultados
+                st.markdown(f"**Resultado para CNPJ:** `{cnpj_limpo}` (Fonte: {fonte})", unsafe_allow_html=True)
+                if situacao == 'Inválido':
+                     st.error(f"CNPJ {cnpj_limpo} parece ser inválido ou não encontrado.")
+                # Verifica se temos pelo menos logradouro ou município para exibir algo
+                elif dados_endereco.get('logradouro') or dados_endereco.get('municipio'):
+                    # Monta a linha do logradouro
+                    logradouro_str = dados_endereco.get('logradouro', '')
+                    numero_str = dados_endereco.get('numero', '')
+                    complemento_str = dados_endereco.get('complemento', '')
+                    linha_logradouro = f"{logradouro_str}, {numero_str}" if numero_str else logradouro_str
+                    if complemento_str:
+                        linha_logradouro += f" - {complemento_str}"
+
+                    # Monta a linha do município
+                    municipio_str = dados_endereco.get('municipio', '')
+                    uf_str = dados_endereco.get('uf', '')
+                    linha_municipio = f"{municipio_str} - {uf_str}" if uf_str else municipio_str
+
+                    st.markdown("📍 **Endereço:**")
+                    if linha_logradouro:
+                        st.markdown(f"&nbsp;&nbsp;&nbsp;&nbsp;**Logradouro:** {linha_logradouro}")
+                    if dados_endereco.get('bairro'):
+                        st.markdown(f"&nbsp;&nbsp;&nbsp;&nbsp;**Bairro:** {dados_endereco.get('bairro')}")
+                    if linha_municipio:
+                        st.markdown(f"&nbsp;&nbsp;&nbsp;&nbsp;**Município:** {linha_municipio}")
+                    if dados_endereco.get('cep'):
+                        st.markdown(f"&nbsp;&nbsp;&nbsp;&nbsp;**CEP:** {dados_endereco.get('cep')}")
+
+                    # Link do Google Maps (usa dados_endereco para mais precisão)
+                    link = google_maps_link(dados_endereco=dados_endereco)
+                    if link:
+                         st.markdown(f"<a href='{link}' target='_blank'>Abrir no Google Maps</a>", unsafe_allow_html=True)
+
+                    st.markdown(f"ℹ️ **Situação:** {situacao_cadastral_str(situacao)}")
+                    st.markdown(f"📞 **Telefone:** {telefone or 'Não informado'}")
+                    st.markdown(f"📧 **Email:** {email or 'Não informado'}")
+
+                    if pd.notnull(lat) and pd.notnull(lon):
+                        st.success(f"Coordenadas: {lat}, {lon}")
+                        try:
+                            df_temp = pd.DataFrame({"latitude": [float(lat)], "longitude": [float(lon)]})
+                            st.map(df_temp)
+                        except ValueError:
+                             st.warning("Não foi possível exibir as coordenadas no mapa (formato inválido).")
+                        except Exception as map_err:
+                             st.warning(f"Erro ao exibir mapa: {map_err}")
+                    else:
+                        st.warning("Coordenadas não encontradas ou inválidas para este endereço.")
                 else:
-                    lat, lon = None, None
-            # Não salva no banco para buscas individuais
-            if endereco:
-                link = google_maps_link(endereco)
-                st.markdown(f"✅ <b>Endereço encontrado:</b> <a href='{link}' target='_blank'>{endereco}</a>", unsafe_allow_html=True)
-                st.markdown(f"<b>Situação Cadastral:</b> <span style='color:#1976d2;font-weight:bold'>{situacao_cadastral_str(situacao)}</span>", unsafe_allow_html=True)
-                if pd.notnull(lat) and pd.notnull(lon):
-                    st.info(f"Coordenadas: {lat}, {lon}")
-                    df_temp = pd.DataFrame({"latitude": [lat], "longitude": [lon]})
-                    df_temp = df_temp.dropna(subset=["latitude", "longitude"])
-                    df_temp["latitude"] = pd.to_numeric(df_temp["latitude"], errors="coerce")
-                    df_temp["longitude"] = pd.to_numeric(df_temp["longitude"], errors="coerce")
-                    if not df_temp.empty:
-                        st.map(df_temp)
-                else:
-                    st.warning("Coordenadas não encontradas para este endereço.")
-            else:
-                st.error("Endereço não encontrado para este CNPJ.")
+                    # Caso não tenha nem logradouro/município, mas talvez outros dados
+                    st.error(f"Endereço não encontrado para o CNPJ {cnpj_limpo}.")
+                    st.markdown(f"ℹ️ **Situação:** {situacao_cadastral_str(situacao)}")
+                    st.markdown(f"📞 **Telefone:** {telefone or 'Não informado'}")
+                    st.markdown(f"📧 **Email:** {email or 'Não informado'}")
+
+# Roda a página
+if __name__ == "__main__":
+    show()
