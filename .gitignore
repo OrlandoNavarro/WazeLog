@@ -174,4 +174,5 @@ cython_debug/
 .pypirc
 
 # OSRM generated files
+!routing/osrm_local/data/sao-paulo-latest.osrm # Exception for specific file
 routing/osrm_local/data/*.osrm*

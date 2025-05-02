@@ -1,3 +1,4 @@
 *.zip filter=lfs diff=lfs merge=lfs -text
 *.db filter=lfs diff=lfs merge=lfs -text
 *.osm.pbf filter=lfs diff=lfs merge=lfs -text
+routing/osrm_local/data/sao-paulo-latest.osrm filter=lfs diff=lfs merge=lfs -text
