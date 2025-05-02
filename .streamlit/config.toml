@@ -1,2 +1,3 @@
 [theme]
 base="auto"
+primaryColor="#1976d2" # Define a cor primária como azul
