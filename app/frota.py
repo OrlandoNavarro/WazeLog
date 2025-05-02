@@ -17,9 +17,14 @@ def processar_frota(arquivo):
         raise ValueError('Formato de arquivo não suportado.')
     # Geração de ID do veículo igual à Placa
     df['ID Veículo'] = df['Placa'].astype(str)
+    # Garante colunas essenciais de janela de tempo
+    if 'Janela Início' not in df.columns:
+        df['Janela Início'] = '00:00'
+    if 'Janela Fim' not in df.columns:
+        df['Janela Fim'] = '23:59'
     # Normalização de capacidade
-    df['Capacidade (Cx)'] = pd.to_numeric(df['Capacidade (Cx)'], errors='coerce')
-    df['Capacidade (Kg)'] = pd.to_numeric(df['Capacidade (Kg)'], errors='coerce')
+    df['Capacidade (Cx)'] = pd.to_numeric(df['Capacidade (Cx)'], errors='coerce').fillna(0)
+    df['Capacidade (Kg)'] = pd.to_numeric(df['Capacidade (Kg)'], errors='coerce').fillna(0)
     # Remove placas proibidas
     df = df[~df['Placa'].astype(str).isin(PLACAS_PROIBIDAS)]
     # Verifica duplicidade de placas

@@ -41,6 +41,10 @@ Para evitar limites e timeouts do servidor público do OSRM, você pode rodar um
       ```bash
       cd /workspaces/WazeLog/routing/osrm_local/ && docker-compose up
       ```
+      ```
+      cd /workspaces/WazeLog/routing/osrm_local/data/ && wget http://download.geofabrik.de/south-america/brazil/sudeste-latest.osm.pbf && mv sudeste-latest.osm.pbf sao-paulo-latest.osm.pbf
+
+      ```
    c. **Aguarde o Pré-processamento:** Na primeira execução, o Docker baixará a imagem do OSRM e iniciará o pré-processamento dos dados do mapa (`brazil-latest.osm.pbf`). **Este passo pode levar bastante tempo (vários minutos a mais de uma hora)**. Aguarde até ver a mensagem "--- Pré-processamento OSRM concluído com sucesso! ---" no terminal. O container `osrm_preprocess_brazil` deve parar após o sucesso.
    d. **Servidor Rodando:** Após o pré-processamento, o container `osrm_backend_brazil` iniciará automaticamente e ficará escutando na porta `5000`. O código Python já está configurado para usar `http://localhost:5000` quando este servidor estiver ativo.
    e. Para rodar o servidor em background nas próximas vezes (após o pré-processamento inicial):
@@ -50,14 +54,13 @@ Para evitar limites e timeouts do servidor público do OSRM, você pode rodar um
       ```
    f. Para parar o servidor:
       ```bash
-      # Dentro de /workspaces/WazeLog/routing/osrm_local/
-      docker-compose down
+      # cd /workspaces/WazeLog/routing/osrm_local/data/ && wget http://download.geofabrik.de/south-america/brazil/sudeste-latest.osm.pbf && mv sudeste-latest.osm.pbf sao-paulo-latest.osm.pbf
       ```
 
 ### 2. Inicie o backend FastAPI
 ```bash
 uvicorn main:app --reload
-python - m uvicorn main:app --reload
+python -m uvicorn main:app
 ```
 Acesse: http://localhost:8000
 

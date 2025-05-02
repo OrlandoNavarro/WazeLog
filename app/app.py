@@ -127,6 +127,76 @@ st.markdown('''
 </style>
 ''', unsafe_allow_html=True)
 
+# CSS aprimorado para modo claro e escuro (dark 100% escuro)
+st.markdown('''
+<style>
+body[data-theme="dark"], .stApp[data-theme="dark"] {
+    --card-bg: #181a1b !important;
+    --card-fg: #f5f7fa !important;
+    --section-title: #90caf9 !important;
+    --table-bg: #181a1b !important;
+    --table-fg: #f5f7fa !important;
+    --container-bg: #181a1b !important;
+    background: #181a1b !important;
+    color: #f5f7fa !important;
+}
+body[data-theme="dark"] .kpi-card, .stApp[data-theme="dark"] .kpi-card,
+body[data-theme="dark"] .stMetric, .stApp[data-theme="dark"] .stMetric,
+body[data-theme="dark"] .stContainer, .stApp[data-theme="dark"] .stContainer {
+    background: var(--card-bg, #181a1b) !important;
+    color: var(--card-fg, #f5f7fa) !important;
+    box-shadow: 0 2px 16px rgba(25, 118, 210, 0.18);
+    border: 1px solid #23272b !important;
+}
+body[data-theme="dark"] .section-title, .stApp[data-theme="dark"] .section-title {
+    color: var(--section-title, #90caf9) !important;
+}
+body[data-theme="dark"] .stDataFrame, .stApp[data-theme="dark"] .stDataFrame,
+body[data-theme="dark"] .stDataEditor, .stApp[data-theme="dark"] .stDataEditor {
+    background: var(--table-bg, #181a1b) !important;
+    color: var(--table-fg, #f5f7fa) !important;
+    border-radius: 16px !important;
+    border: 1px solid #23272b !important;
+}
+body[data-theme="dark"] .stButton>button, .stApp[data-theme="dark"] .stButton>button,
+body[data-theme="dark"] .stDownloadButton>button, .stApp[data-theme="dark"] .stDownloadButton>button {
+    background: #23272b !important;
+    color: #90caf9 !important;
+    border: 1px solid #1976d2 !important;
+}
+body[data-theme="dark"] .stButton>button:hover, .stApp[data-theme="dark"] .stButton>button:hover,
+body[data-theme="dark"] .stDownloadButton>button:hover, .stApp[data-theme="dark"] .stDownloadButton>button:hover {
+    background: #1976d2 !important;
+    color: #fff !important;
+}
+/* Remove gradientes claros e bordas claras do modo dark */
+body[data-theme="dark"] .main-header {
+    background: linear-gradient(90deg, #181a1b 0%, #23272b 100%) !important;
+    color: #f5f7fa !important;
+}
+body[data-theme="dark"] .menu-item-premium {
+    background: #23272b !important;
+    color: #90caf9 !important;
+    border: 1px solid #23272b !important;
+}
+body[data-theme="dark"] .menu-item-premium.selected {
+    background: linear-gradient(90deg, #1976d2 0%, #23272b 100%) !important;
+    color: #fff !important;
+    border: 1px solid #1976d2 !important;
+}
+body[data-theme="dark"] .menu-item-premium:hover {
+    background: #263238 !important;
+    color: #90caf9 !important;
+    border: 1.5px solid #90caf9 !important;
+}
+body[data-theme="dark"] .stSidebar {
+    background: #181a1b !important;
+    color: #f5f7fa !important;
+    border: 1px solid #23272b !important;
+}
+</style>
+''', unsafe_allow_html=True)
+
 menu_itens = [
     ("Dashboard", "🏠"),
     ("Frota", "🚚"),

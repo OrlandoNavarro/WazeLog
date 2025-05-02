@@ -9,7 +9,7 @@ import json
 import traceback # Adicionado para log de erro completo
 
 # --- Constantes ---
-OSRM_SERVER_URL = "http://router.project-osrm.org"
+OSRM_SERVER_URL = "http://localhost:5000" # Alterado para usar o servidor OSRM local via Docker
 MAX_RETRIES = 3
 # --- AJUSTE AQUI ---
 RETRY_DELAY = 15 # Segundos entre retentativas
@@ -204,6 +204,13 @@ def calcular_matriz_distancias(pontos, provider="osrm", metrica="duration", prog
 
 
                 # --- Requisição OSRM com Pontos Válidos ---
+                # Não faz requisição se houver menos de 2 pontos válidos em sources ou destinations
+                if len(osrm_sources_indices) < 2 or len(osrm_destinations_indices) < 2:
+                    logging.warning(f"Lote ignorado: menos de 2 pontos em sources ou destinations (sources={len(osrm_sources_indices)}, destinations={len(osrm_destinations_indices)}). Pulando requisição OSRM.")
+                    if progress_callback:
+                        progress_callback(request_count / total_requests)
+                    continue
+
                 if not osrm_points_coords or len(osrm_points_coords) < 1 or not osrm_sources_indices or not osrm_destinations_indices:
                      logging.warning(f"Nenhum ponto válido ou nenhuma origem/destino válido no lote combinado (Req {request_count}). Pulando requisição OSRM.")
                      if progress_callback:

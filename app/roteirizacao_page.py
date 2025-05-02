@@ -11,11 +11,8 @@ from database import (
     carregar_endereco_partida
 )
 # Ajuste na importação dos solvers para pegar do módulo correto
-from routing.vrp import solver_vrp
 from routing.cvrp import solver_cvrp
-from routing.vrptw import solver_vrptw
-from routing.tsp import solver_tsp
-# from routing.ortools_solver import solver_vrp, solver_cvrp, solver_vrptw, solver_tsp # Comentado - Usar imports diretos
+from routing.cvrp_flex import solver_cvrp_flex
 from routing.distancias import calcular_matriz_distancias
 from pedidos import obter_coordenadas # Para geocodificação do endereço de partida
 
@@ -50,11 +47,19 @@ def show():
         if frota is not None and not frota.empty:
              frota = frota.loc[:, ~frota.columns.duplicated()] # Remove colunas duplicadas
              if 'Disponível' in frota.columns:
-                  # Filtra disponíveis (se necessário, aplicar filtro aqui)
-                  # frota = frota[frota['Disponível'] == True] # Exemplo
-                  pass # Por enquanto, não filtra
+                  # Filtra disponíveis
+                  frota = frota[frota['Disponível'] == True]
              else:
                  st.warning("Coluna 'Disponível' não encontrada na frota. Considerando todos os veículos.")
+             # Garante colunas essenciais e tipos corretos
+             if 'Capacidade (Kg)' not in frota.columns:
+                 frota['Capacidade (Kg)'] = 0
+             else:
+                 frota['Capacidade (Kg)'] = pd.to_numeric(frota['Capacidade (Kg)'], errors='coerce').fillna(0)
+             if 'Janela Início' not in frota.columns:
+                 frota['Janela Início'] = '00:00'
+             if 'Janela Fim' not in frota.columns:
+                 frota['Janela Fim'] = '23:59'
         else:
              st.warning("Não foi possível carregar dados da frota ou a frota está vazia.")
              frota = pd.DataFrame() # Dataframe vazio para evitar erros
@@ -66,6 +71,13 @@ def show():
             else:
                 st.warning("Coluna 'Região' não encontrada nos pedidos. Exibindo sem ordenação por região.")
                 pedidos_sorted = pedidos
+            # Garante colunas essenciais e tipos corretos
+            if 'Janela de Descarga' not in pedidos.columns:
+                pedidos['Janela de Descarga'] = 30
+            if 'Latitude' not in pedidos.columns:
+                pedidos['Latitude'] = None
+            if 'Longitude' not in pedidos.columns:
+                pedidos['Longitude'] = None
             # Separa pedidos não alocados (sem coordenadas) ANTES de filtrar
             pedidos_nao_alocados = pedidos[pedidos['Latitude'].isna() | pedidos['Longitude'].isna()].copy()
             pedidos_validos = pedidos.dropna(subset=['Latitude', 'Longitude']).copy()
@@ -157,17 +169,23 @@ def show():
         st.subheader("Configuração da Roteirização")
         tipo = st.selectbox(
             "Selecione o tipo de problema de roteirização",
-            ["CVRP", "VRP", "VRPTW", "TSP"], # CVRP como padrão
+            ["CVRP", "CVRP Flex"],
             key="tipo_roteirizacao_select",
             help="Escolha o algoritmo de roteirização baseado nas restrições do seu problema."
         )
         explicacoes = {
-            "VRP": "VRP (Vehicle Routing Problem): Minimiza a distância total com múltiplos veículos, sem restrição de capacidade.",
             "CVRP": "CVRP (Capacitated VRP): Considera a capacidade máxima (Kg ou Cx) dos veículos.",
-            "VRPTW": "VRPTW (VRP with Time Windows): Considera janelas de tempo para entrega nos clientes e operação dos veículos.",
-            "TSP": "TSP (Traveling Salesman Problem): Roteirização para um único 'veículo' visitando todos os pontos."
+            "CVRP Flex": "CVRP Flex: Permite ajustar a capacidade dos veículos de 0% a 120% para simular sobrecarga controlada."
         }
         st.info(explicacoes.get(tipo, ""))
+
+        ajuste_capacidade_pct = 100
+        if tipo in ["CVRP", "CVRP Flex"]:
+            ajuste_capacidade_pct = st.slider(
+                "Ajuste de Capacidade dos Veículos (%)",
+                min_value=80, max_value=120, value=100, step=1,
+                help="Permite simular veículos carregando menos ou até 20% a mais que a capacidade cadastrada."
+            )
 
         # --- Resumo dos Dados para Roteirização ---
         with st.container(border=True): # Adiciona borda ao container
@@ -198,9 +216,21 @@ def show():
                 st.error("Erro: Coordenadas de partida inválidas. Verifique a configuração do endereço de partida.")
             elif pedidos_validos.empty:
                 st.error("Erro: Nenhum pedido com coordenadas válidas encontrado para roteirizar.")
-            elif frota.empty and tipo != "TSP": # TSP pode não precisar de frota definida
+            elif frota.empty:
                  st.error(f"Erro: A frota está vazia, não é possível calcular rotas para {tipo}.")
             else:
+                # --- Validações adicionais antes de calcular matrizes ---
+                if tipo == "CVRP":
+                    # 1. Demanda maior que qualquer veículo
+                    if 'Peso dos Itens' in pedidos_validos.columns and 'Capacidade (Kg)' in frota.columns:
+                        demandas_pedidos = pedidos_validos['Peso dos Itens'].fillna(0).astype(float)
+                        capacidades_veic = frota['Capacidade (Kg)'].fillna(0).astype(float)
+                        max_capacidade = capacidades_veic.max() if not capacidades_veic.empty else 0
+                        pedidos_excedentes = pedidos_validos[demandas_pedidos > max_capacidade]
+                        if not pedidos_excedentes.empty:
+                            st.error(f"Existem pedidos cuja demanda excede a capacidade máxima dos veículos ({max_capacidade:.1f} Kg). Corrija antes de prosseguir.")
+                            st.dataframe(pedidos_excedentes, use_container_width=True)
+                            return
                 # Preparar dados comuns para todos os solvers
                 depot_coord = (lat_partida, lon_partida)
                 customer_coords = pedidos_validos[['Latitude', 'Longitude']].values.tolist()
@@ -209,45 +239,25 @@ def show():
                 depot_index = 0 # Índice do depósito na lista all_locations
 
                 matriz_distancias = None
-                matriz_tempos = None
 
                 # Calcular Matriz de Distâncias (necessária para VRP, CVRP, TSP e cálculo final de distância)
                 with st.spinner("Calculando matriz de distâncias..."):
                     try:
-                        # CORREÇÃO: Usar 'metrica' em vez de 'metric'
                         matriz_distancias = calcular_matriz_distancias(all_locations, metrica='distance')
                         if matriz_distancias is None or len(matriz_distancias) != len(all_locations):
                              st.error("Falha ao calcular a matriz de distâncias completa.")
                              matriz_distancias = None # Garante que não prossiga se falhar
+                        elif np.any(np.array(matriz_distancias) >= 1e7):
+                             st.error("A matriz de distâncias contém valores infinitos ou impossíveis. Verifique as coordenadas dos pedidos e do depósito.")
+                             return
                         else:
                              st.success(f"Matriz de distâncias ({matriz_distancias.shape}) calculada.")
                     except Exception as e:
                         st.error(f"Erro no cálculo da matriz de distâncias: {e}")
                         matriz_distancias = None
 
-                # Calcular Matriz de Tempos (essencial para VRPTW)
-                if tipo == "VRPTW":
-                    with st.spinner("Calculando matriz de tempos..."):
-                        try:
-                            # CORREÇÃO: Usar 'metrica' em vez de 'metric'
-                            # Usar 'duration' para obter tempos em segundos
-                            matriz_tempos = calcular_matriz_distancias(all_locations, metrica='duration')
-                            if matriz_tempos is None or len(matriz_tempos) != len(all_locations):
-                                st.error("Falha ao calcular a matriz de tempos completa.")
-                                matriz_tempos = None
-                            else:
-                                # OSRM retorna segundos, converter para minutos se o solver esperar minutos
-                                # matriz_tempos = (matriz_tempos / 60).round().astype(int)
-                                # Vamos assumir que o solver lida com segundos por enquanto.
-                                st.success(f"Matriz de tempos ({matriz_tempos.shape}) calculada (em segundos).")
-                        except Exception as e:
-                            st.error(f"Erro no cálculo da matriz de tempos: {e}")
-                            matriz_tempos = None
-
                 # Prosseguir apenas se as matrizes necessárias estiverem prontas
-                # VRPTW precisa de matriz_tempos E matriz_distancias (para cálculo final)
-                # Outros precisam apenas de matriz_distancias
-                matriz_ok = (matriz_distancias is not None) if tipo != "VRPTW" else (matriz_tempos is not None and matriz_distancias is not None)
+                matriz_ok = (matriz_distancias is not None)
 
                 if matriz_ok:
                     rotas = None
@@ -257,13 +267,7 @@ def show():
 
                     with st.spinner(f"Executando o solver {tipo}..."):
                         try:
-                            # Chama o solver apropriado
-                            if tipo == "VRP":
-                                # VRP geralmente minimiza distância, usa matriz_distancias
-                                rotas = solver_vrp(pedidos_validos, frota, matriz_distancias, depot_index=depot_index)
-                                rotas_df = rotas # Resultado já é DataFrame
-                                status_solver = "OK" if rotas_df is not None and not rotas_df.empty else "Falha ou Sem Solução"
-                            elif tipo == "CVRP":
+                            if tipo == "CVRP":
                                 # CVRP também minimiza distância, mas considera capacidade
                                 if 'Peso dos Itens' not in pedidos_validos.columns:
                                     st.error("Coluna 'Peso dos Itens' necessária para CVRP não encontrada nos pedidos.")
@@ -273,227 +277,132 @@ def show():
                                      raise ValueError("Faltando 'Capacidade (Kg)'")
                                 else:
                                      # Passa a matriz de distâncias
-                                     rotas = solver_cvrp(pedidos_validos, frota, matriz_distancias, depot_index=depot_index)
+                                     rotas = solver_cvrp(pedidos_validos, frota, matriz_distancias, depot_index=depot_index, ajuste_capacidade_pct=ajuste_capacidade_pct)
                                      rotas_df = rotas # Resultado já é DataFrame
                                      status_solver = "OK" if rotas_df is not None and not rotas_df.empty else "Falha ou Sem Solução"
-                            elif tipo == "VRPTW":
-                                st.info("Preparando dados específicos para VRPTW...")
-
-                                # --- Preparação de Dados para VRPTW ---
-
-                                # 1. Demanda (Peso)
-                                if 'Peso dos Itens' not in pedidos_validos.columns:
-                                    st.error("Coluna 'Peso dos Itens' necessária para VRPTW não encontrada.")
-                                    raise ValueError("Faltando 'Peso dos Itens'")
-                                demands = [0] + pedidos_validos['Peso dos Itens'].fillna(0).astype(int).tolist()
-
-                                # 2. Capacidade dos Veículos
-                                if 'Capacidade (Kg)' not in frota.columns:
-                                    st.error("Coluna 'Capacidade (Kg)' necessária para VRPTW não encontrada.")
-                                    raise ValueError("Faltando 'Capacidade (Kg)'")
-                                vehicle_capacities = frota['Capacidade (Kg)'].fillna(0).astype(int).tolist()
-                                num_vehicles = len(frota)
-
-                                # Função auxiliar para converter HH:MM para segundos a partir da meia-noite
-                                def time_str_to_seconds(time_str):
-                                    try:
-                                        hours, minutes = map(int, str(time_str).split(':'))
-                                        return hours * 3600 + minutes * 60
-                                    except:
-                                        return None # Retorna None se a conversão falhar
-
-                                # 3. Janelas de Tempo do Depósito/Veículos
-                                depot_start_times = frota['Janela Início'].apply(time_str_to_seconds).tolist()
-                                depot_end_times = frota['Janela Fim'].apply(time_str_to_seconds).tolist()
-
-                                if any(t is None for t in depot_start_times) or any(t is None for t in depot_end_times):
-                                     st.warning("Algumas janelas de tempo dos veículos ('Janela Início'/'Janela Fim') estão em formato inválido ou ausentes. Verifique 'frota.csv'. Usando 0-86400 (dia inteiro) como fallback.")
-                                     # Usar um padrão amplo se houver erro, ou parar? Por enquanto, padrão amplo.
-                                     default_window = (0, 86400) # 24 horas em segundos
-                                     vehicle_time_windows = [default_window] * num_vehicles
-                                else:
-                                     vehicle_time_windows = list(zip(depot_start_times, depot_end_times))
-
-                                # 4. Janelas de Tempo dos Clientes (Assumindo que NÃO existem colunas específicas)
-                                # PRECISA DE AJUSTE SE HOUVER COLUNAS COMO 'Cliente Janela Inicio', 'Cliente Janela Fim'
-                                st.warning("Dados de janela de tempo dos clientes não encontrados em 'pedidos.csv'. Usando a janela do primeiro veículo como padrão para todos os clientes.")
-                                if vehicle_time_windows:
-                                    default_customer_window = vehicle_time_windows[0] # Usa a janela do primeiro veículo
-                                else:
-                                    default_customer_window = (0, 86400) # Fallback se janelas dos veículos falharam
-
-                                customer_time_windows = [default_customer_window] * len(customer_coords)
-                                # A janela do depósito é a primeira na lista geral
-                                # A janela do depósito em si é definida pelas janelas dos veículos no solver
-                                time_windows = [default_customer_window] + customer_time_windows # Janela padrão para depósito, será sobrescrita no solver
-
-                                # 5. Tempo de Serviço nos Clientes
-                                service_times_seconds = []
-                                if 'Janela de Descarga' in pedidos_validos.columns:
-                                    st.info("Usando 'Janela de Descarga' (em minutos) como tempo de serviço. Convertendo para segundos.")
-                                    try:
-                                        # Multiplica por 60 para converter minutos para segundos
-                                        service_times_seconds = (pedidos_validos['Janela de Descarga'].fillna(0).astype(int) * 60).tolist()
-                                    except ValueError:
-                                        st.warning("Não foi possível converter 'Janela de Descarga' para números. Assumindo 0 tempo de serviço.")
-                                        service_times_seconds = [0] * len(customer_coords)
-                                else:
-                                    st.warning("Coluna 'Janela de Descarga' não encontrada. Assumindo 0 tempo de serviço.")
-                                    service_times_seconds = [0] * len(customer_coords)
-                                # Tempo de serviço no depósito é 0
-                                service_times = [0] + service_times_seconds
-
-                                # 6. Montar o dicionário de dados para o solver
-                                data_vrptw = {
-                                    'time_matrix': matriz_tempos.tolist(),
-                                    'time_windows': time_windows,
-                                    'num_vehicles': num_vehicles,
-                                    'depot': depot_index,
-                                    'demands': demands,
-                                    'vehicle_capacities': vehicle_capacities,
-                                    'service_times': service_times,
-                                    'vehicle_time_windows': vehicle_time_windows, # Passando janelas dos veículos
-                                    'pedidos_df': pedidos_validos.reset_index(drop=True), # Passa DF para referência
-                                    'frota_df': frota.reset_index(drop=True) # Passa DF para referência
-                                }
-
-                                # Chamar o solver VRPTW com os dados estruturados
-                                resultado_solver = solver_vrptw(data_vrptw) # solver_vrptw retorna um dicionário
-                                rotas_df = resultado_solver.get('rotas') if resultado_solver else pd.DataFrame()
-                                status_solver = resultado_solver.get('status', 'Status Desconhecido') if resultado_solver else 'Falha na execução'
-
-                            elif tipo == "TSP":
-                                # TSP geralmente usa matriz de distâncias
-                                rotas = solver_tsp(matriz_distancias) # Ajustar chamada conforme a implementação
-                                rotas_df = rotas # Assumindo que retorna DataFrame
+                            elif tipo == "CVRP Flex":
+                                rotas = solver_cvrp_flex(pedidos_validos, frota, matriz_distancias, depot_index=depot_index, ajuste_capacidade_pct=ajuste_capacidade_pct)
+                                rotas_df = rotas
                                 status_solver = "OK" if rotas_df is not None and not rotas_df.empty else "Falha ou Sem Solução"
 
-                        except ValueError as ve: # Captura erros de dados faltantes levantados acima
+                        except ValueError as ve:
                              st.error(f"Erro de dados ao preparar para {tipo}: {ve}")
                              status_solver = f"Erro de Dados: {ve}"
+                             rotas_df = None
+                             st.session_state['rotas_calculadas'] = None
+                             st.session_state['mapa_necessario'] = False
                         except Exception as solver_error:
                              st.error(f"Erro durante a execução do solver {tipo}: {solver_error}")
-                             st.exception(solver_error) # Mostra traceback para depuração
+                             st.exception(solver_error)
                              status_solver = f"Erro Solver: {solver_error}"
+                             rotas_df = None
+                             st.session_state['rotas_calculadas'] = None
+                             st.session_state['mapa_necessario'] = False
 
-                    # Processamento dos resultados (fora do spinner)
-                    if rotas_df is not None and not rotas_df.empty:
-                        st.success(f"Rotas calculadas com sucesso usando {tipo}! Status: {status_solver}")
+                        # Relatório automático de causas para inviabilidade
+                        if status_solver and ("INFEASIBLE" in str(status_solver).upper() or "NENHUMA SOLUÇÃO" in str(status_solver).upper() or "Falha" in str(status_solver)):
+                            st.warning("\n**Diagnóstico automático para problema inviável:**\n\n- Verifique se algum pedido tem demanda maior que a capacidade máxima dos veículos.\n- Revise as janelas de tempo dos veículos e pedidos (se existirem).\n- Confira se todos os pedidos possuem coordenadas válidas e não há outliers muito distantes.\n- Certifique-se de que a frota é suficiente para atender todos os pedidos.\n- Tente relaxar restrições (aumentar janelas, frota, capacidade) e rode novamente.\n\nSe o problema persistir, revise os dados de entrada e tente com um conjunto menor de pedidos.")
 
-                        # <<< ADICIONAR COORDENADAS AO rotas_df ANTES DE EXIBIR/SALVAR >>>
-                        if 'Pedido_Index_DF' in rotas_df.columns and not pedidos_validos.empty:
-                            try:
-                                # Garante que o índice de pedidos_validos seja o padrão para merge
-                                pedidos_coords = pedidos_validos.reset_index().rename(columns={'index': 'Original_Index'})
-                                # Seleciona apenas as colunas necessárias para o merge
-                                coords_to_merge = pedidos_coords[['Original_Index', 'Latitude', 'Longitude']].copy()
-                                # Renomeia a coluna de índice para corresponder a 'Pedido_Index_DF'
-                                coords_to_merge = coords_to_merge.rename(columns={'Original_Index': 'Pedido_Index_DF'})
+                    if rotas_df is not None:
+                        if not rotas_df.empty:
+                            if 'Pedido_Index_DF' in rotas_df.columns and not pedidos_validos.empty:
+                                try:
+                                    coords_to_merge = pedidos_validos.reset_index(drop=True).reset_index()[['index', 'Latitude', 'Longitude']].copy()
+                                    coords_to_merge = coords_to_merge.rename(columns={'index': 'Pedido_Index_DF'})
+                                    rotas_df = pd.merge(
+                                        rotas_df,
+                                        coords_to_merge,
+                                        on='Pedido_Index_DF',
+                                        how='left',
+                                        suffixes=(None, '_pedido')
+                                    )
+                                    st.info("Coordenadas adicionadas ao DataFrame de rotas.")
+                                except Exception as merge_err:
+                                    st.warning(f"Não foi possível adicionar coordenadas ao DataFrame de rotas: {merge_err}")
+                            else:
+                                 st.warning("Não foi possível adicionar coordenadas ao DataFrame de rotas (coluna 'Pedido_Index_DF' ou 'pedidos_validos' ausente/vazio).")
 
-                                # Faz o merge para adicionar Lat/Lon ao df_rotas
-                                rotas_df = pd.merge(
-                                    rotas_df,
-                                    coords_to_merge,
-                                    on='Pedido_Index_DF',
-                                    how='left' # Mantém todas as rotas, mesmo se o merge falhar para alguma
-                                )
-                                st.info("Coordenadas adicionadas ao DataFrame de rotas.")
-                            except Exception as merge_err:
-                                st.warning(f"Não foi possível adicionar coordenadas ao DataFrame de rotas: {merge_err}")
-                        else:
-                             st.warning("Não foi possível adicionar coordenadas ao DataFrame de rotas (coluna 'Pedido_Index_DF' ou 'pedidos_validos' ausente/vazio).")
+                            with st.expander("Visualizar Tabela de Rotas Geradas (com Coordenadas)", expanded=True):
+                                st.dataframe(rotas_df, use_container_width=True)
 
-
-                        with st.expander("Visualizar Tabela de Rotas Geradas (com Coordenadas)", expanded=True):
-                            st.dataframe(rotas_df, use_container_width=True)
-
-                        # --- Calcular Distância Total Real ---
-                        distancia_total_real = 0
-                        # Usa matriz_distancias que foi calculada para todos os casos (se ok)
-                        if matriz_distancias is not None and 'Veículo' in rotas_df.columns and 'Node_Index_OR' in rotas_df.columns:
-                            try:
-                                for veiculo, rota_veiculo in rotas_df.groupby('Veículo'):
-                                    # Ordenar pela sequência, se existir, senão pela ordem que veio
-                                    if 'Sequencia' in rota_veiculo.columns:
+                            distancia_total_real_m = 0
+                            if matriz_distancias is not None and 'Veículo' in rotas_df.columns and 'Node_Index_OR' in rotas_df.columns:
+                                try:
+                                    for veiculo, rota_veiculo in rotas_df.groupby('Veículo'):
                                         rota_veiculo = rota_veiculo.sort_values('Sequencia')
+                                        node_indices = [depot_index] + rota_veiculo['Node_Index_OR'].tolist() + [depot_index]
+                                        distancia_rota = 0
+                                        for i in range(len(node_indices) - 1):
+                                            idx_from = node_indices[i]
+                                            idx_to = node_indices[i+1]
+                                            if 0 <= idx_from < len(matriz_distancias) and 0 <= idx_to < len(matriz_distancias[idx_from]):
+                                                distancia_rota += matriz_distancias[idx_from][idx_to]
+                                            else:
+                                                st.warning(f"Índice fora dos limites da matriz de distâncias ao calcular distância real: {idx_from} -> {idx_to}")
+                                        distancia_total_real_m += distancia_rota
+                                    st.metric("Distância Total Real (Calculada)", f"{distancia_total_real_m / 1000:,.1f} km")
+                                except Exception as calc_dist_e:
+                                    st.warning(f"Não foi possível calcular a distância total real a partir das rotas: {calc_dist_e}")
+                                    distancia_total_real_m = None
+                            else:
+                                 st.warning("Matriz de distâncias ou colunas necessárias não disponíveis para calcular a distância total real.")
+                                 distancia_total_real_m = None
 
-                                    node_indices = [depot_index] + rota_veiculo['Node_Index_OR'].tolist() + [depot_index]
-                                    distancia_rota = 0
-                                    for i in range(len(node_indices) - 1):
-                                        idx_from = node_indices[i]
-                                        idx_to = node_indices[i+1]
-                                        # Verifica limites da matriz
-                                        if 0 <= idx_from < len(matriz_distancias) and 0 <= idx_to < len(matriz_distancias[idx_from]):
-                                            distancia_rota += matriz_distancias[idx_from][idx_to]
-                                        else:
-                                            st.warning(f"Índice fora dos limites da matriz de distâncias ao calcular distância real: {idx_from} -> {idx_to}")
-                                    distancia_total_real += distancia_rota
-                                st.info(f"Distância total real calculada: {distancia_total_real:,.0f} metros.")
-                            except Exception as calc_dist_e:
-                                st.warning(f"Não foi possível calcular a distância total real a partir das rotas: {calc_dist_e}")
-                                distancia_total_real = None # Falha no cálculo
-                        elif 'distancia' in rotas_df.columns: # Fallback se o solver já calculou (menos provável para VRPTW)
-                             distancia_total_real = rotas_df['distancia'].sum()
-                             st.info(f"Usando distância pré-calculada pelo solver: {distancia_total_real:,.0f} metros.")
+                            cenario = {
+                                'data': pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S'),
+                                'tipo': tipo,
+                                'rotas': rotas_df,
+                                'qtd_pedidos_roteirizados': len(pedidos_validos),
+                                'qtd_veiculos_disponiveis': len(frota),
+                                'distancia_total_real_m': distancia_total_real_m,
+                                'custo_solver_sec': None,
+                                'tempo_operacao_sec': None,
+                                'status_solver': status_solver,
+                                'endereco_partida': endereco_partida,
+                                'lat_partida': lat_partida,
+                                'lon_partida': lon_partida,
+                                'pedidos_nao_alocados': pedidos_nao_alocados
+                            }
+                            st.session_state.cenarios_roteirizacao.insert(0, cenario)
                         else:
-                             st.warning("Matriz de distâncias ou colunas necessárias não disponíveis para calcular a distância total real.")
-                             distancia_total_real = None # Não foi possível calcular
+                            st.info(f"Nenhuma rota gerada para {tipo}. Status: {status_solver}")
 
-                        # Salvar cenário no histórico (agora rotas_df tem Lat/Lon se o merge funcionou)
-                        cenario = {
-                            'data': pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S'),
-                            'tipo': tipo,
-                            'rotas': rotas_df, # Dataframe completo das rotas com coordenadas
-                            'qtd_pedidos_roteirizados': len(pedidos_validos),
-                            'qtd_veiculos_disponiveis': len(frota),
-                            'distancia_total': distancia_total_real,
-                            'custo_solver': resultado_solver.get('total_distance') if tipo == "VRPTW" and resultado_solver else None,
-                            'tempo_solver': resultado_solver.get('total_time') if tipo == "VRPTW" and resultado_solver else None,
-                            'status_solver': status_solver,
-                            'endereco_partida': endereco_partida,
-                            'lat_partida': lat_partida,
-                            'lon_partida': lon_partida,
-                            'pedidos_nao_alocados': pedidos_nao_alocados
-                        }
-                        st.session_state.cenarios_roteirizacao.insert(0, cenario) # Adiciona no início
-                    # ... (restante do código) ...
-                    else: # Fim do if matriz_ok
+                    else:
+                         st.error(f"Não foi possível executar a roteirização ({tipo}) devido a erros anteriores. Status: {status_solver}")
+
+                else:
                      st.error("Não foi possível calcular as matrizes necessárias (distâncias e/ou tempos). Verifique os erros acima.")
 
-
-        # Exibe aviso sobre pedidos não alocados (fora do botão de cálculo, mostra sempre se houver)
         if not pedidos_nao_alocados.empty:
             st.warning(f"Atenção: {len(pedidos_nao_alocados)} pedidos não possuem coordenadas válidas e não foram incluídos na roteirização.")
             with st.expander("Ver Pedidos Não Roteirizados"):
                  st.dataframe(pedidos_nao_alocados, use_container_width=True)
 
-        st.divider() # <<<< ESTE É O DIVIDER QUE ESTAVA CAUSANDO O ERRO >>>>
+        st.divider()
 
-        # --- Histórico de Cenários ---
         if st.session_state.cenarios_roteirizacao:
             st.subheader("Histórico de Cenários Calculados")
-            # Cria DataFrame para exibição resumida
             df_cenarios_display = pd.DataFrame([
                 {
                     'Data': c.get('data', ''),
                     'Tipo': c.get('tipo', ''),
-                    'Pedidos Roteirizados': c.get('qtd_pedidos_roteirizados', ''),
-                    'Veículos Disponíveis': c.get('qtd_veiculos_disponiveis', ''),
-                    'Distância Total (m)': f"{c.get('distancia_total', 0):,.0f}" if c.get('distancia_total') is not None else "N/A",
-                    'Status Solver': c.get('status_solver', 'N/A'),
-                    'Endereço Partida': c.get('endereco_partida', '')
+                    'Pedidos': c.get('qtd_pedidos_roteirizados', ''),
+                    'Veículos': c.get('qtd_veiculos_disponiveis', ''),
+                    'Distância Real': f"{c.get('distancia_total_real_m', 0) / 1000:,.1f} km" if c.get('distancia_total_real_m') is not None else "N/A",
+                    'Custo Solver (s)': f"{c.get('custo_solver_sec', 0):,.0f}" if c.get('custo_solver_sec') is not None else "N/A",
+                    'Tempo Operação (s)': f"{c.get('tempo_operacao_sec', 0):,.0f}" if c.get('tempo_operacao_sec') is not None else "N/A",
+                    'Status': c.get('status_solver', 'N/A'),
                 }
                 for c in st.session_state.cenarios_roteirizacao
             ])
-            st.dataframe(df_cenarios_display, use_container_width=True)
+            st.dataframe(df_cenarios_display, use_container_width=True, hide_index=True)
 
-            # Seleção para visualização detalhada
             cenario_indices = range(len(st.session_state.cenarios_roteirizacao))
             selected_idx = st.selectbox(
                 "Visualizar detalhes e mapa do cenário:",
                 options=cenario_indices,
-                format_func=lambda i: f"{df_cenarios_display.iloc[i]['Data']} - {df_cenarios_display.iloc[i]['Tipo']} ({df_cenarios_display.iloc[i]['Pedidos Roteirizados']} pedidos)",
-                index=None, # Nenhum selecionado por padrão
+                format_func=lambda i: f"{df_cenarios_display.iloc[i]['Data']} - {df_cenarios_display.iloc[i]['Tipo']} ({df_cenarios_display.iloc[i]['Pedidos']} pedidos)",
+                index=None,
                 key="select_cenario_historico"
             )
 
@@ -501,12 +410,44 @@ def show():
                 cenario_selecionado = st.session_state.cenarios_roteirizacao[selected_idx]
                 st.markdown(f"#### Detalhes do Cenário: {cenario_selecionado['data']} ({cenario_selecionado['tipo']})")
 
-                # Mostrar tabela de rotas do cenário selecionado
                 st.write("**Rotas Geradas:**")
-                st.dataframe(cenario_selecionado.get('rotas', pd.DataFrame()), use_container_width=True)
-                # Adicionar aqui a lógica para exibir o mapa se necessário
+                df_rotas_cenario = cenario_selecionado.get('rotas', pd.DataFrame())
+                st.dataframe(df_rotas_cenario, use_container_width=True)
 
-    # <<<< FIM CORRETO DO BLOCO TRY >>>>
+                df_nao_alocados_cenario = cenario_selecionado.get('pedidos_nao_alocados', pd.DataFrame())
+                if not df_nao_alocados_cenario.empty:
+                    st.write("**Pedidos Não Roteirizados neste Cenário:**")
+                    st.dataframe(df_nao_alocados_cenario, use_container_width=True)
+
+                if not df_rotas_cenario.empty:
+                    st.write("**Mapa da Rota:**")
+                    if 'Latitude' in df_rotas_cenario.columns and 'Longitude' in df_rotas_cenario.columns:
+                        df_map = df_rotas_cenario.dropna(subset=["Latitude", "Longitude"]).rename(columns={"Latitude": "latitude", "Longitude": "longitude"})
+                        st.map(df_map)
+                    else:
+                        st.info("Não há coordenadas válidas para exibir o mapa da rota.")
+
+        # Diagnóstico automático de inviabilidade
+        if tipo == "CVRP" and not pedidos_validos.empty and not frota.empty:
+            # 1. Pedidos com demanda maior que a capacidade máxima
+            if 'Peso dos Itens' in pedidos_validos.columns and 'Capacidade (Kg)' in frota.columns:
+                demandas_pedidos = pedidos_validos['Peso dos Itens'].fillna(0).astype(float)
+                max_capacidade = frota['Capacidade (Kg)'].max()
+                pedidos_excedentes = pedidos_validos[demandas_pedidos > max_capacidade]
+                if not pedidos_excedentes.empty:
+                    st.warning(f"Pedidos com demanda maior que a capacidade máxima dos veículos ({max_capacidade:.1f} Kg):")
+                    st.dataframe(pedidos_excedentes, use_container_width=True)
+            # 2. Veículos com capacidade zero ou nula
+            if 'Capacidade (Kg)' in frota.columns:
+                veiculos_sem_capacidade = frota[frota['Capacidade (Kg)'] <= 0]
+                if not veiculos_sem_capacidade.empty:
+                    st.warning("Veículos com capacidade zero ou nula:")
+                    st.dataframe(veiculos_sem_capacidade, use_container_width=True)
+            # 3. Pedidos sem coordenadas
+            pedidos_sem_coord = pedidos_validos[pedidos_validos['Latitude'].isna() | pedidos_validos['Longitude'].isna()]
+            if not pedidos_sem_coord.empty:
+                st.warning("Pedidos sem coordenadas válidas:")
+                st.dataframe(pedidos_sem_coord, use_container_width=True)
 
     except FileNotFoundError as e:
          st.error(f"Erro: Arquivo não encontrado. Verifique se os arquivos de dados ({e.filename}) estão na pasta correta.")
@@ -514,8 +455,4 @@ def show():
          st.error(f"Erro de importação: {e}. Verifique se todas as dependências estão instaladas corretamente (`pip install -r requirements.txt`).")
     except Exception as e:
         st.error(f"Ocorreu um erro inesperado na página de roteirização: {e}")
-        st.exception(e) # Mostra o traceback completo para depuração
-
-# Comentar execução direta se a navegação for centralizada
-# if __name__ == "__main__":
-#     show()
+        st.exception(e)

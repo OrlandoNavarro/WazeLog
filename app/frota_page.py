@@ -82,15 +82,12 @@ def show():
     st.divider()
     if 'df_frota' not in st.session_state:
         st.session_state.df_frota = pd.DataFrame()
+    # Garantir que não há índices duplicados
+    st.session_state.df_frota = st.session_state.df_frota.reset_index(drop=True)
     arquivo = st.file_uploader("Upload da planilha da frota", type=["xlsx", "xlsm", "csv", "json"])
     if arquivo:
         try:
             df = processar_frota(arquivo)
-            # Garante que as colunas de janela de tempo existam com valores padrão
-            if 'Janela Início' not in df.columns:
-                df['Janela Início'] = '05:00'
-            if 'Janela Fim' not in df.columns:
-                df['Janela Fim'] = '17:00'
             st.session_state.df_frota = df.copy()
             salvar_frota(df)
             st.success("Frota importada com sucesso!")
@@ -103,6 +100,10 @@ def show():
     if not df.empty:
         df = df.loc[:, ~df.columns.duplicated()]
         df.columns = [str(col) if col else f"Coluna_{i}" for i, col in enumerate(df.columns)]
+        # Remove colunas de janela de tempo se existirem
+        for col in ['Janela Início', 'Janela Fim']:
+            if col in df.columns:
+                df = df.drop(columns=[col])
         # Campo para selecionar veículo
         placa_col = 'Placa' if 'Placa' in df.columns else None
         veiculo_sel = None
@@ -111,18 +112,9 @@ def show():
             veiculo_sel = st.selectbox("Selecione o veículo para editar", ["Todos"] + placas)
             if veiculo_sel != "Todos":
                 df = df[df[placa_col] == veiculo_sel]
-        # Calcular minutos de janela
-        def minutos_entre(hora_ini, hora_fim):
-            try:
-                h1, m1 = map(int, str(hora_ini).split(":"))
-                h2, m2 = map(int, str(hora_fim).split(":"))
-                return (h2*60 + m2) - (h1*60 + m1)
-            except Exception:
-                return None
-        if 'Janela Início' in df.columns and 'Janela Fim' in df.columns:
-            df['Janela (min)'] = df.apply(lambda row: minutos_entre(row['Janela Início'], row['Janela Fim']), axis=1)
         st.subheader("Editar Frota")
-        df_editado = st.data_editor(df, num_rows="dynamic", use_container_width=True, key="frota_editor")
+        colunas_editor = [c for c in df.columns if c not in ['Janela Início', 'Janela Fim']]
+        df_editado = st.data_editor(df[colunas_editor], num_rows="dynamic", use_container_width=True, key="frota_editor")
         st.divider()
         st.subheader("Remover veículos")
         def format_option(x):
@@ -153,8 +145,6 @@ def show():
         if isinstance(disponivel_raw, (pd.Series, list)):
             disponivel_raw = disponivel_raw.iloc[0] if hasattr(disponivel_raw, 'iloc') else disponivel_raw[0]
         disponivel_val = "Sim" if bool(disponivel_raw) else "Não"
-        janela_inicio_val = veic_row.get('Janela Início', '05:00')
-        janela_fim_val = veic_row.get('Janela Fim', '17:00')
     else:
         placa_val = ""
         transportador_val = ""
@@ -163,8 +153,6 @@ def show():
         capacidade_cx_val = 0
         capacidade_kg_val = 0.0
         disponivel_val = "Sim"
-        janela_inicio_val = "05:00"
-        janela_fim_val = "17:00"
     with st.form("add_veiculo_form"):
         col1, col2, col3 = st.columns(3)
         with col1:
@@ -177,8 +165,6 @@ def show():
             capacidade_kg = st.number_input("Capacidade (Kg)", min_value=0.0, step=1.0, format="%.2f", value=float(capacidade_kg_val))
         with col3:
             disponivel = st.selectbox("Disponível", ["Sim", "Não"], index=0 if disponivel_val=="Sim" else 1)
-            janela_inicio = st.text_input("Janela Início (HH:MM)", value=janela_inicio_val)
-            janela_fim = st.text_input("Janela Fim (HH:MM)", value=janela_fim_val)
         if placa_editar == "(Novo)":
             submitted = st.form_submit_button("Adicionar veículo")
             if submitted and placa:
@@ -190,9 +176,7 @@ def show():
                     "Capacidade (Cx)": capacidade_cx,
                     "Capacidade (Kg)": capacidade_kg,
                     "Disponível": disponivel.lower() == "sim",
-                    "ID Veículo": placa,
-                    "Janela Início": janela_inicio,
-                    "Janela Fim": janela_fim
+                    "ID Veículo": placa
                 }
                 st.session_state.df_frota = pd.concat([st.session_state.df_frota, pd.DataFrame([novo])], ignore_index=True)
                 salvar_frota(st.session_state.df_frota)
@@ -201,14 +185,15 @@ def show():
         else:
             submitted = st.form_submit_button("Atualizar veículo")
             if submitted and placa:
-                # Remove duplicatas de placa e garante índices únicos
+                # Remove duplicatas de índice e de placa antes de atualizar
+                st.session_state.df_frota = st.session_state.df_frota.reset_index(drop=True)
                 st.session_state.df_frota = st.session_state.df_frota.drop_duplicates(subset=['Placa'], keep='first').reset_index(drop=True)
                 idxs = st.session_state.df_frota[st.session_state.df_frota['Placa'] == placa_editar].index
                 if len(idxs) > 0:
-                    idx = idxs[0]  # Atualiza apenas a primeira ocorrência
+                    idx = idxs[0]
                     st.session_state.df_frota.loc[idx, [
-                        'Placa', 'Transportador', 'Descrição', 'Veículo', 'Capacidade (Cx)', 'Capacidade (Kg)', 'Disponível', 'ID Veículo', 'Janela Início', 'Janela Fim']
-                    ] = [placa, transportador, descricao, veiculo, capacidade_cx, capacidade_kg, disponivel.lower() == "sim", placa, janela_inicio, janela_fim]
+                        'Placa', 'Transportador', 'Descrição', 'Veículo', 'Capacidade (Cx)', 'Capacidade (Kg)', 'Disponível', 'ID Veículo']
+                    ] = [placa, transportador, descricao, veiculo, capacidade_cx, capacidade_kg, disponivel.lower() == "sim", placa]
                     salvar_frota(st.session_state.df_frota)
                     st.success("Veículo atualizado!")
                     st.rerun()

@@ -97,6 +97,9 @@ def show():
         df = carregar_pedidos()
         st.session_state.df_pedidos = df.copy()
     if not df.empty:
+        # Remove coluna de janela de tempo se existir
+        if 'Janela de Descarga' in df.columns:
+            df = df.drop(columns=['Janela de Descarga'])
         # Garantir que as colunas Regiao, Endereco Completo, Latitude e Longitude existam e estejam corretas
         if 'Endereço de Entrega' in df.columns and 'Bairro de Entrega' in df.columns and 'Cidade de Entrega' in df.columns:
             df['Região'] = df.apply(lambda row: f"{row['Cidade de Entrega']} - {row['Bairro de Entrega']}" if str(row['Cidade de Entrega']).strip().lower() == 'são paulo' and row['Bairro de Entrega'] else row['Cidade de Entrega'], axis=1)
@@ -105,10 +108,8 @@ def show():
             df['Latitude'] = None
         if 'Longitude' not in df.columns:
             df['Longitude'] = None
-        if 'Janela de Descarga' not in df.columns:
-            df['Janela de Descarga'] = 30
         # Filtro para ordenar a planilha por coluna
-        colunas_ordenaveis = list(df.columns)
+        colunas_ordenaveis = [c for c in df.columns if c != 'Janela de Descarga']
         coluna_ordem = st.selectbox("Ordenar por", colunas_ordenaveis, index=0)
         if coluna_ordem:
             df = df.sort_values(by=coluna_ordem, key=lambda x: x.astype(str)).reset_index(drop=True)
@@ -119,21 +120,6 @@ def show():
             regioes = []
         regiao_filtro = st.selectbox("Filtrar por região", ["Todas"] + regioes)
         status_filtro = st.selectbox("Status de coordenadas", ["Todos", "Com coordenadas", "Sem coordenadas"])
-        if 'Janela de Descarga' in df.columns:
-            min_janela = int(df['Janela de Descarga'].min())
-            max_janela = int(df['Janela de Descarga'].max())
-            if min_janela < max_janela:
-                janela_min, janela_max = st.slider(
-                    "Filtrar por janela de descarga (minutos)",
-                    min_value=min_janela,
-                    max_value=max_janela,
-                    value=(min_janela, max_janela)
-                )
-            else:
-                st.info(f"Janela de descarga fixa: {min_janela} minutos")
-                janela_min, janela_max = min_janela, max_janela
-        else:
-            janela_min, janela_max = 30, 30
         df_filtrado = df.copy()
         if regiao_filtro != "Todas":
             df_filtrado = df_filtrado[df_filtrado['Região'] == regiao_filtro]
@@ -141,9 +127,7 @@ def show():
             df_filtrado = df_filtrado[df_filtrado['Latitude'].notnull() & df_filtrado['Longitude'].notnull()]
         elif status_filtro == "Sem coordenadas":
             df_filtrado = df_filtrado[df_filtrado['Latitude'].isnull() | df_filtrado['Longitude'].isnull()]
-        if 'Janela de Descarga' in df_filtrado.columns:
-            df_filtrado = df_filtrado[(df_filtrado['Janela de Descarga'] >= janela_min) & (df_filtrado['Janela de Descarga'] <= janela_max)]
-        # Busca global
+        # Remove filtro de janela de tempo
         filtro = st.text_input("Buscar pedidos (qualquer campo)")
         if filtro:
             filtro_lower = filtro.lower()
@@ -152,23 +136,26 @@ def show():
         def get_row_style(row):
             falta_lat = 'Latitude' not in row or pd.isnull(row.get('Latitude'))
             falta_lon = 'Longitude' not in row or pd.isnull(row.get('Longitude'))
-            falta_descarga = 'Janela de Descarga' not in row or pd.isnull(row.get('Janela de Descarga'))
-            if falta_lat or falta_lon or falta_descarga:
+            if falta_lat or falta_lon:
                 return ["background-color: #fff3cd"] * len(row)
             return [""] * len(row)
+        # Garante que as colunas de janela de tempo e tempo de serviço estejam visíveis
+        for col in ["Janela Início", "Janela Fim", "Tempo de Serviço"]:
+            if col not in df_filtrado.columns:
+                df_filtrado[col] = ""  # valor vazio se não existir
+        # Garante que as colunas estejam na ordem desejada
+        colunas_editor = [c for c in df_filtrado.columns if c != 'Janela de Descarga']
+        for col in ["Janela Início", "Janela Fim", "Tempo de Serviço"]:
+            if col not in colunas_editor:
+                colunas_editor.append(col)
         # Exibir apenas a planilha editável, sem duplicar visualização
         st.subheader("Editar Pedidos")
         df_editado = st.data_editor(
-            df_filtrado,
+            df_filtrado[colunas_editor],
             num_rows="dynamic",
             use_container_width=True,
             key="pedidos_editor",
             column_config={
-                "Janela de Descarga": st.column_config.NumberColumn(
-                    "Janela de Descarga",
-                    format="%d min",
-                    help="Tempo estimado de descarga no cliente (em minutos)."
-                ),
                 "Latitude": st.column_config.NumberColumn(
                     "Latitude",
                     help="Latitude do endereço de entrega."
@@ -184,9 +171,21 @@ def show():
                 "Endereço Completo": st.column_config.TextColumn(
                     "Endereço Completo",
                     help="Endereço completo gerado a partir dos campos de endereço, bairro e cidade."
-                )
+                ),
+                "Janela Início": st.column_config.TextColumn(
+                    "Janela Início",
+                    help="Horário de início da janela de atendimento (ex: 06:00)"
+                ),
+                "Janela Fim": st.column_config.TextColumn(
+                    "Janela Fim",
+                    help="Horário de fim da janela de atendimento (ex: 20:00)"
+                ),
+                "Tempo de Serviço": st.column_config.TextColumn(
+                    "Tempo de Serviço",
+                    help="Tempo de serviço no local (ex: 00:30)"
+                ),
             },
-            column_order=df.columns.tolist(),
+            column_order=colunas_editor,
             hide_index=True
         )
         if not df_editado.equals(df_filtrado):
@@ -265,7 +264,6 @@ def show():
             latitude = st.number_input("Latitude", format="%.14f", value=-23.51689237191825)
             longitude = st.number_input("Longitude", format="%.14f", value=-46.48921155767101)
             anomalia = st.checkbox("Anomalia")
-            janela_descarga = st.number_input("Janela de Descarga (min)", min_value=1, value=30, step=1, help="Tempo estimado de descarga no cliente (em minutos).")
         submitted = st.form_submit_button("Adicionar pedido")
         if submitted and numero:
             # Gerar Região automaticamente se não preenchida
@@ -286,7 +284,6 @@ def show():
                 "Peso dos Itens": peso_itens,
                 "Latitude": latitude,
                 "Longitude": longitude,
-                "Janela de Descarga": janela_descarga,
                 "Anomalia": anomalia
             }
             st.session_state.df_pedidos = pd.concat([st.session_state.df_pedidos, pd.DataFrame([novo])], ignore_index=True)
@@ -295,9 +292,7 @@ def show():
             st.rerun()
     # Exportação de anomalias para CSV
     if 'df_filtrado' in locals():
-        if 'Janela de Descarga' not in df_filtrado.columns:
-            df_filtrado['Janela de Descarga'] = 30
-        anomalias = df_filtrado[df_filtrado['Latitude'].isnull() | df_filtrado['Longitude'].isnull() | df_filtrado['Janela de Descarga'].isnull()]
+        anomalias = df_filtrado[df_filtrado['Latitude'].isnull() | df_filtrado['Longitude'].isnull()]
         if not anomalias.empty:
             st.download_button(
                 label="Exportar anomalias para CSV",
@@ -308,6 +303,7 @@ def show():
     # Visualização de pedidos no mapa (fora do formulário)
     if 'df_filtrado' in locals() and st.button("Visualizar pedidos no mapa"):
         if 'Latitude' in df_filtrado.columns and 'Longitude' in df_filtrado.columns:
-            st.map(df_filtrado.dropna(subset=["Latitude", "Longitude"]))
+            df_map = df_filtrado.dropna(subset=["Latitude", "Longitude"]).rename(columns={"Latitude": "latitude", "Longitude": "longitude"})
+            st.map(df_map)
         else:
             st.warning("Não há coordenadas suficientes para exibir no mapa.")

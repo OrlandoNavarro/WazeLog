@@ -139,6 +139,27 @@ def processar_pedidos(arquivo, max_linhas=None, tamanho_lote=20, delay_lote=5):
         # Garante que a coluna existente seja string
         df['Endereço Completo'] = df['Endereço Completo'].fillna('').astype(str)
 
+    # --- Garante colunas essenciais ---
+    if 'Janela de Descarga' not in df.columns:
+        df['Janela de Descarga'] = 30
+    if 'Latitude' not in df.columns:
+        df['Latitude'] = None
+    if 'Longitude' not in df.columns:
+        df['Longitude'] = None
+
+    # --- Garante colunas de janela de tempo e tempo de serviço para VRPTW ---
+    if 'Janela Início' not in df.columns:
+        df['Janela Início'] = "06:00"
+    else:
+        df['Janela Início'] = df['Janela Início'].fillna('').replace('', '06:00')
+    if 'Janela Fim' not in df.columns:
+        df['Janela Fim'] = "20:00"
+    else:
+        df['Janela Fim'] = df['Janela Fim'].fillna('').replace('', '20:00')
+    if 'Tempo de Serviço' not in df.columns:
+        df['Tempo de Serviço'] = "00:30"
+    else:
+        df['Tempo de Serviço'] = df['Tempo de Serviço'].fillna('').replace('', '00:30')
 
     # --- Continua o processamento ---
     # Definir Região (Tenta usar Cidade/Bairro se existirem, senão usa uma lógica baseada no Endereço Completo se possível)

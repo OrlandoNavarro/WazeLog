@@ -83,6 +83,9 @@ st.markdown("""
 }
 </style>
 """, unsafe_allow_html=True)
+st.header("Mapas de Pedidos", divider="rainbow")
+st.write("Visualize todos os pedidos e rotas no mapa de forma simples e rápida.")
+st.divider()
 
 def show():
     st.header("Mapas de Rotas", divider="rainbow")
@@ -109,12 +112,10 @@ def show():
 
     # Inicializa variáveis do mapa
     map_location = default_depot_location
-    zoom_start = 11 # Mantém zoom aumentado
     rotas_df = None
     pedidos_mapa = pd.DataFrame()
     depot_lat = default_depot_location[0]
     depot_lon = default_depot_location[1]
-    map_bounds = None
 
     # --- Processa a Seleção ---
     if selecao == "Mostrar apenas pedidos":
@@ -122,39 +123,11 @@ def show():
         if pedidos_todos is not None:
             pedidos_mapa = pedidos_todos.dropna(subset=['Latitude', 'Longitude']).copy()
             if not pedidos_mapa.empty:
-                 # Calcula bounds para centralizar
-                 try:
-                     lat_min = pedidos_mapa['Latitude'].min()
-                     lon_min = pedidos_mapa['Longitude'].min()
-                     lat_max = pedidos_mapa['Latitude'].max()
-                     lon_max = pedidos_mapa['Longitude'].max()
-
-                     map_bounds = [[lat_min, lon_min], [lat_max, lon_max]]
-
-                     # Adiciona depósito aos bounds se tiver coordenadas válidas
-                     if lat_partida_salva and lon_partida_salva:
-                          map_bounds[0][0] = min(map_bounds[0][0], lat_partida_salva)
-                          map_bounds[0][1] = min(map_bounds[0][1], lon_partida_salva)
-                          map_bounds[1][0] = max(map_bounds[1][0], lat_partida_salva)
-                          map_bounds[1][1] = max(map_bounds[1][1], lon_partida_salva)
-
-                     # VERIFICAÇÃO DO TAMANHO DOS BOUNDS
-                     max_lat_span = 10.0
-                     max_lon_span = 10.0
-                     lat_span = map_bounds[1][0] - map_bounds[0][0]
-                     lon_span = map_bounds[1][1] - map_bounds[0][1]
-
-                     if lat_span > max_lat_span or lon_span > max_lon_span:
-                          st.warning(f"Bounds muito amplos ({lat_span:.2f} lat, {lon_span:.2f} lon). Possíveis outliers. Usando zoom padrão.")
-                          map_bounds = None
-                 except Exception as bound_calc_err:
-                      st.error(f"Erro ao calcular bounds: {bound_calc_err}")
-                      map_bounds = None
+                df_map = pedidos_mapa.rename(columns={"Latitude": "latitude", "Longitude": "longitude"})
+                st.map(df_map)
             else:
-                 st.warning("Nenhum pedido com coordenadas válidas encontrado.")
-                 map_bounds = None
-
-    else: # Um cenário foi selecionado
+                st.warning("Nenhum pedido com coordenadas válidas encontrado.")
+    else:
         try:
             idx_cenario = int(selecao.split(":")[0])
             cenario_selecionado = cenarios_disponiveis[idx_cenario]
@@ -165,138 +138,103 @@ def show():
 
             if rotas_df is not None and not rotas_df.empty and 'Latitude' in rotas_df.columns and 'Longitude' in rotas_df.columns:
                 st.info(f"Exibindo rotas do cenário: {cenario_selecionado.get('data', '')} ({cenario_selecionado.get('tipo', '')})")
-                # Calcula bounds para centralizar rotas e depósito
-                try:
-                    lat_min = rotas_df['Latitude'].min()
-                    lon_min = rotas_df['Longitude'].min()
-                    lat_max = rotas_df['Latitude'].max()
-                    lon_max = rotas_df['Longitude'].max()
-                    map_bounds = [[lat_min, lon_min], [lat_max, lon_max]]
-                    # Adiciona depósito
-                    map_bounds[0][0] = min(map_bounds[0][0], depot_lat)
-                    map_bounds[0][1] = min(map_bounds[0][1], depot_lon)
-                    map_bounds[1][0] = max(map_bounds[1][0], depot_lat)
-                    map_bounds[1][1] = max(map_bounds[1][1], depot_lon)
-
-                    # Verifica span também para rotas
-                    max_lat_span = 10.0
-                    max_lon_span = 10.0
-                    lat_span = map_bounds[1][0] - map_bounds[0][0]
-                    lon_span = map_bounds[1][1] - map_bounds[0][1]
-                    if lat_span > max_lat_span or lon_span > max_lon_span:
-                         st.warning(f"Bounds das rotas muito amplos ({lat_span:.2f} lat, {lon_span:.2f} lon). Usando zoom padrão.")
-                         map_bounds = None
-
-                except Exception as bound_calc_err_rota:
-                    st.error(f"Erro ao calcular bounds das rotas: {bound_calc_err_rota}")
-                    map_bounds = None
-
+                # Filtro de placas e cards de resumo
+                placa_selecionada = None
+                if 'Veículo' in rotas_df.columns:
+                    placas_unicas = rotas_df['Veículo'].dropna().unique().tolist()
+                    placa_selecionada = st.selectbox(
+                        "Selecione a placa do veículo para análise:",
+                        options=placas_unicas,
+                        index=0,
+                        help="Selecione uma placa para visualizar e analisar as rotas desse veículo no mapa."
+                    )
+                    if placa_selecionada:
+                        rotas_df = rotas_df[rotas_df['Veículo'] == placa_selecionada]
+                        # Cards de resumo
+                        capacidade_veiculo = None
+                        frota_df = None
+                        try:
+                            from database import carregar_frota
+                            frota_df = carregar_frota()
+                        except Exception:
+                            pass
+                        if frota_df is not None and not frota_df.empty and 'Placa' in frota_df.columns:
+                            veic_row = frota_df[frota_df['Placa'] == placa_selecionada]
+                            if not veic_row.empty:
+                                capacidade_veiculo = veic_row.iloc[0].get('Capacidade (Kg)', None)
+                        qtd_pedidos = len(rotas_df)
+                        peso_total = rotas_df['Peso dos Itens'].sum() if 'Peso dos Itens' in rotas_df.columns else 0
+                # Exibe rotas no mapa com trajeto real por ruas usando OSRM
+                if not rotas_df.empty:
+                    pontos = rotas_df.dropna(subset=["Latitude", "Longitude"])
+                    if not pontos.empty:
+                        if 'Sequencia' in pontos.columns:
+                            pontos = pontos.sort_values('Sequencia')
+                        coords = [[depot_lat, depot_lon]]
+                        coords += pontos[["Latitude", "Longitude"]].values.tolist()
+                        if len(coords) > 2 and (coords[-1] != coords[0]):
+                            coords.append([depot_lat, depot_lon])
+                        m = folium.Map(location=[depot_lat, depot_lon], zoom_start=12, tiles="CartoDB dark_matter")
+                        folium.Marker([depot_lat, depot_lon], icon=folium.Icon(color='blue', icon='home'), tooltip='Depósito').add_to(m)
+                        for i, row in pontos.iterrows():
+                            folium.Marker([row['Latitude'], row['Longitude']], tooltip=f"Pedido {row.get('Nº Pedido', i)}").add_to(m)
+                        # Trajeto real por ruas (OSRM)
+                        # Calcular distância total (km) e tempo total (min) da rota
+                        distancia_total_km = 0
+                        tempo_total_min = 0
+                        import requests
+                        for i in range(len(coords)-1):
+                            origem = coords[i]
+                            destino = coords[i+1]
+                            url = f"http://localhost:5000/route/v1/driving/{origem[1]},{origem[0]};{destino[1]},{destino[0]}?overview=full&geometries=geojson"
+                            try:
+                                resp = requests.get(url, timeout=10)
+                                if resp.status_code == 200:
+                                    data = resp.json()
+                                    if data.get('routes'):
+                                        route = data['routes'][0]
+                                        geometry = route['geometry']
+                                        # Define cor: vermelho para ida, azul para volta
+                                        if i < len(coords)-2:
+                                            cor_linha = 'red'  # Ida
+                                        else:
+                                            cor_linha = 'blue' # Volta para base
+                                        folium.PolyLine(
+                                            locations=[(lat, lon) for lon, lat in geometry['coordinates']],
+                                            color=cor_linha, weight=4, opacity=0.8
+                                        ).add_to(m)
+                                        distancia_total_km += route.get('distance', 0) / 1000
+                                        tempo_total_min += route.get('duration', 0) / 60
+                            except Exception:
+                                pass
+                        st_folium(m, width=None, height=500)
+                        # Exibir métricas organizadas em 2 colunas, separadas por '-'
+                        with st.container():
+                            col_esq, col_dir = st.columns(2)
+                            with col_esq:
+                                st.metric("Placa do Veículo", placa_selecionada)
+                                st.markdown("<div style='font-size:1.2rem;text-align:center;'>-</div>", unsafe_allow_html=True)
+                                st.metric("Pedidos Empenhados", qtd_pedidos)
+                                st.markdown("<div style='font-size:1.2rem;text-align:center;'>-</div>", unsafe_allow_html=True)
+                                st.metric("Distância Total (km)", f"{distancia_total_km:.1f}")
+                            with col_dir:
+                                st.metric("Capacidade do Veículo (Kg)", f"{capacidade_veiculo:,.1f}" if capacidade_veiculo is not None else "N/A")
+                                st.markdown("<div style='font-size:1.2rem;text-align:center;'>-</div>", unsafe_allow_html=True)
+                                st.metric("Peso Empenhado (Kg)", f"{peso_total:,.1f}")
+                                st.markdown("<div style='font-size:1.2rem;text-align:center;'>-</div>", unsafe_allow_html=True)
+                                # Exibir tempo estimado no formato hh:mm
+                                horas = int(tempo_total_min // 60) if tempo_total_min else 0
+                                minutos = int(round(tempo_total_min % 60)) if tempo_total_min else 0
+                                tempo_formatado = f"{horas}:{minutos:02d}"
+                                st.metric("Tempo Estimado (h)", tempo_formatado)
+                    else:
+                        st.info("Não há coordenadas válidas para exibir o trajeto.")
+                else:
+                    st.info("Não há dados de rota para a placa selecionada.")
             else:
                 st.warning("Dados de rotas ou coordenadas ausentes no cenário selecionado. Exibindo apenas depósito.")
-                rotas_df = None
-                pedidos_mapa = pd.DataFrame()
-
         except (ValueError, IndexError):
             st.error("Erro ao selecionar o cenário.")
-            selecao = "Mostrar apenas pedidos"
-            if pedidos_todos is not None:
-                 pedidos_mapa = pedidos_todos.dropna(subset=['Latitude', 'Longitude']).copy()
-
-
-    # --- Cria e Plota o Mapa ---
-    m = folium.Map(location=map_location, zoom_start=zoom_start, tiles='OpenStreetMap')
-
-    # Plota Depósito (sempre que tiver coordenadas válidas)
-    if depot_lat and depot_lon:
-        folium.Marker(
-            location=[depot_lat, depot_lon],
-            tooltip=f"Depósito: {endereco_partida_salvo or 'Local Padrão'}",
-            icon=folium.Icon(color='blue', icon='industry', prefix='fa')
-        ).add_to(m)
-
-    # Plota Pedidos (se selecionado "Mostrar apenas pedidos")
-    if selecao == "Mostrar apenas pedidos" and not pedidos_mapa.empty:
-        marker_cluster = MarkerCluster().add_to(m)
-        total_markers_added = 0
-        batch_size = 50
-        delay_between_batches = 0.1
-
-        # Adicionar marcadores em lotes
-        num_pedidos = len(pedidos_mapa)
-        for i in range(0, num_pedidos, batch_size):
-            batch_df = pedidos_mapa.iloc[i:min(i + batch_size, num_pedidos)]
-
-            for idx, row in batch_df.iterrows():
-                num_pedido = str(row.get('Nº Pedido', 'N/A'))
-                tooltip_text = f"Pedido: {num_pedido}"
-
-                try:
-                    lat = float(row['Latitude'])
-                    lon = float(row['Longitude'])
-                    folium.CircleMarker(
-                        location=[lat, lon],
-                        radius=5, color='red', fill=True, fill_color='red', fill_opacity=0.7,
-                        tooltip=tooltip_text
-                    ).add_to(marker_cluster)
-                    total_markers_added += 1
-                except Exception as marker_err:
-                     st.error(f"Erro ao adicionar marcador para pedido {row.get('Nº Pedido', idx)} no lote: {marker_err}")
-
-            time.sleep(delay_between_batches)
-
-    # Plota Rotas (se um cenário válido foi selecionado)
-    elif rotas_df is not None and not rotas_df.empty:
-        cores_veiculos = {veiculo: gerar_cor_aleatoria() for veiculo in rotas_df['Veículo'].unique()}
-        for idx, row in rotas_df.iterrows():
-            cor_veiculo = cores_veiculos.get(row['Veículo'], 'gray')
-            num_pedido = str(row.get('Nº Pedido', row.get('Pedido_Index_DF', 'N/A')))
-            tooltip_rota = (
-                f"Veículo: {row.get('Veículo', 'N/A')}<br>"
-                f"Sequência: {row.get('Sequencia', 'N/A')}<br>"
-                f"Pedido: {num_pedido}<br>"
-                f"Cliente: {row.get('Cliente', 'N/A')}<br>"
-                f"Chegada: {pd.to_timedelta(row.get('Chegada_Estimada_Sec', 0), unit='s') if 'Chegada_Estimada_Sec' in row else 'N/A'}<br>"
-                f"Saída: {pd.to_timedelta(row.get('Saida_Estimada_Sec', 0), unit='s') if 'Saida_Estimada_Sec' in row else 'N/A'}"
-            )
-            folium.CircleMarker(
-                location=[row['Latitude'], row['Longitude']],
-                radius=5, color=cor_veiculo, fill=True, fill_color=cor_veiculo, fill_opacity=0.8,
-                tooltip=tooltip_rota
-            ).add_to(m)
-        depot_coords = [depot_lat, depot_lon]
-        for veiculo, rota in rotas_df.groupby('Veículo'):
-            cor_veiculo = cores_veiculos.get(veiculo, 'gray')
-            rota_ordenada = rota.sort_values(by='Sequencia') if 'Sequencia' in rota.columns else rota
-            route_coords = [depot_coords] + rota_ordenada[['Latitude', 'Longitude']].values.tolist() + [depot_coords]
-            folium.PolyLine(
-                locations=route_coords,
-                color=cor_veiculo,
-                weight=3,
-                opacity=0.7,
-                tooltip=f"Rota Veículo: {veiculo}"
-            ).add_to(m)
-
-
-    # Ajusta o zoom do mapa SOMENTE se bounds foram calculados E SÃO VÁLIDOS
-    if map_bounds:
-        try:
-            m.fit_bounds(map_bounds, padding=(0.01, 0.01))
-        except Exception as fit_bounds_err:
-            st.error(f"Erro ao ajustar bounds do mapa: {fit_bounds_err}")
-
-
-    # Exibe o mapa
-    try:
-        # <<< Ajustar tamanho do mapa >>>
-        st_folium(m, key="mapa_pedidos_cluster", use_container_width=True, height=900, returned_objects=[]) # Usa largura do container e altura 600
-    except Exception as st_folium_err:
-        st.error(f"Erro ao exibir mapa com st_folium: {st_folium_err}")
-
-    # try/except principal
-    # except Exception as e:
-    #     st.error(f"Ocorreu um erro inesperado ao gerar o mapa: {str(e)}")
-    #     import traceback
-    #     traceback.print_exc()
 
 # Comentar execução direta se a navegação for centralizada
 # if __name__ == "__main__":
