@@ -1,5 +1,4 @@
 # /workspaces/WazeLog/routing/osrm_local/docker-compose.yml
-version: '3.8'
 
 services:
   osrm-backend:
