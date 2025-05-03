@@ -395,15 +395,50 @@ def show():
                                      st.warning("Matriz de distâncias ou colunas necessárias não disponíveis para calcular a distância total real.")
                                  distancia_total_real_m = None # Garante que seja None se não calculado
 
+                            # --- Calcular e Exibir Resumo por Veículo ---
+                            peso_total_empenhado_kg = 0
+                            if isinstance(rotas_df, pd.DataFrame) and not rotas_df.empty and 'Veículo' in rotas_df.columns and 'Demanda' in rotas_df.columns:
+                                resumo_veiculos = rotas_df.groupby('Veículo')['Demanda'].sum().reset_index()
+                                resumo_veiculos = resumo_veiculos.rename(columns={'Demanda': 'Peso Empenhado (Kg)'})
+                                peso_total_empenhado_kg = resumo_veiculos['Peso Empenhado (Kg)'].sum()
+
+                                # Tentar merge com frota para obter capacidade
+                                try:
+                                    # Identificar a coluna de ID correta na frota (prioriza 'ID Veículo')
+                                    id_col_frota = 'ID Veículo' if 'ID Veículo' in frota.columns else 'Placa'
+                                    if id_col_frota in frota.columns and 'Capacidade (Kg)' in frota.columns:
+                                        frota_capacidade = frota[[id_col_frota, 'Capacidade (Kg)']].copy()
+                                        # Renomear a coluna de ID da frota para corresponder à coluna 'Veículo' do resumo
+                                        frota_capacidade = frota_capacidade.rename(columns={id_col_frota: 'Veículo'})
+                                        resumo_veiculos = pd.merge(resumo_veiculos, frota_capacidade, on='Veículo', how='left')
+                                        # Calcular % de Ocupação
+                                        resumo_veiculos['Ocupação (%)'] = (
+                                            (resumo_veiculos['Peso Empenhado (Kg)'] / resumo_veiculos['Capacidade (Kg)'] * 100)
+                                            .fillna(0)
+                                            .round(1)
+                                        )
+                                    else:
+                                        st.warning("Não foi possível encontrar 'ID Veículo'/'Placa' ou 'Capacidade (Kg)' na frota para adicionar ao resumo.")
+                                        resumo_veiculos['Capacidade (Kg)'] = None
+                                        resumo_veiculos['Ocupação (%)'] = None
+
+                                    with st.expander("Resumo de Carga por Veículo", expanded=False):
+                                        st.dataframe(resumo_veiculos, use_container_width=True, hide_index=True)
+                                except Exception as resumo_err:
+                                    st.warning(f"Erro ao gerar resumo por veículo: {resumo_err}")
+                            # --- Fim Resumo por Veículo ---
+
                             cenario = {
                                 'data': pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S'),
                                 'tipo': tipo,
                                 'rotas': rotas_df,
                                 'qtd_pedidos_roteirizados': len(pedidos_validos),
+                                'qtd_veiculos_utilizados': rotas_df['Veículo'].nunique() if isinstance(rotas_df, pd.DataFrame) and not rotas_df.empty else 0,
                                 'qtd_veiculos_disponiveis': len(frota),
+                                'peso_total_empenhado_kg': peso_total_empenhado_kg, # Adicionado
                                 'distancia_total_real_m': distancia_total_real_m,
-                                'custo_solver_sec': None,
-                                'tempo_operacao_sec': None,
+                                'custo_solver_sec': None, # Placeholder
+                                'tempo_operacao_sec': None, # Placeholder
                                 'status_solver': status_solver,
                                 'endereco_partida': endereco_partida,
                                 'lat_partida': lat_partida,

@@ -219,7 +219,16 @@ def show():
                             if not veic_row.empty:
                                 capacidade_veiculo = veic_row.iloc[0].get('Capacidade (Kg)', None)
                         qtd_pedidos = len(rotas_df)
-                        peso_total = rotas_df['Peso dos Itens'].sum() if 'Peso dos Itens' in rotas_df.columns else 0
+                        # --- CORREÇÃO AQUI: Usar 'Demanda' em vez de 'Peso dos Itens' ---
+                        peso_total = 0
+                        if 'Demanda' in rotas_df.columns:
+                            # Garante que a coluna é numérica antes de somar
+                            demanda_numeric = pd.to_numeric(rotas_df['Demanda'], errors='coerce').fillna(0)
+                            peso_total = demanda_numeric.sum()
+                        else:
+                            st.warning("Coluna 'Demanda' não encontrada no DataFrame de rotas filtrado.")
+                        # --- FIM DA CORREÇÃO ---
+
                 # Exibe rotas no mapa com trajeto real por ruas usando OSRM
                 if not rotas_df.empty:
                     pontos = rotas_df.dropna(subset=["Latitude", "Longitude"])
@@ -234,7 +243,9 @@ def show():
                         folium.Marker([depot_lat, depot_lon], icon=folium.Icon(color='blue', icon='home'), tooltip='Depósito').add_to(m)
                         for i, row in pontos.iterrows():
                             # <<< MODIFICADO: Garante que 'Nº Pedido' seja usado no tooltip e popup >>>
-                            pedido_info = f"Pedido: {row.get('Nº Pedido', 'ID Desconhecido')}"
+                            # Tenta buscar 'ID Pedido' primeiro, depois 'Nº Pedido'
+                            pedido_id_display = row.get('ID Pedido', row.get('Nº Pedido', 'ID Desconhecido'))
+                            pedido_info = f"Pedido: {pedido_id_display}"
                             folium.Marker(
                                 [row['Latitude'], row['Longitude']],
                                 tooltip=pedido_info, # Mostra ao passar o mouse
@@ -249,6 +260,8 @@ def show():
                         for i in range(len(coords)-1):
                             origem = coords[i]
                             destino = coords[i+1]
+                            # Ajuste para usar http://router.project-osrm.org se o local não estiver rodando
+                            # url = f"http://router.project-osrm.org/route/v1/driving/{origem[1]},{origem[0]};{destino[1]},{destino[0]}?overview=full&geometries=geojson"
                             url = f"http://localhost:5000/route/v1/driving/{origem[1]},{origem[0]};{destino[1]},{destino[0]}?overview=full&geometries=geojson"
                             try:
                                 resp = requests.get(url, timeout=10)
@@ -268,13 +281,22 @@ def show():
                                         ).add_to(m)
                                         distancia_total_km += route.get('distance', 0) / 1000
                                         tempo_total_min += route.get('duration', 0) / 60
-                            except Exception:
-                                pass
+                                else:
+                                     # Adiciona log se OSRM falhar
+                                     # st.warning(f"OSRM request failed for segment {i}: Status {resp.status_code}")
+                                     pass # Continua tentando os próximos segmentos
+                            except requests.exceptions.ConnectionError:
+                                 st.error("Erro de conexão com o servidor OSRM local (localhost:5000). Verifique se o container Docker está rodando.")
+                                 break # Para de tentar calcular rotas se OSRM não está acessível
+                            except Exception as osrm_err:
+                                 # st.warning(f"Erro ao buscar rota OSRM para segmento {i}: {osrm_err}")
+                                 pass # Continua tentando os próximos segmentos
+
                         # <<< MODIFICADO: Adiciona chave dinâmica ao st_folium >>>
                         # Cria chave única baseada na seleção para evitar erro de chave duplicada
                         # Remove caracteres inválidos para uma chave
                         safe_selecao = "".join(c for c in selecao if c.isalnum() or c in ('_'))
-                        map_key = f"folium_map_{safe_selecao}"
+                        map_key = f"folium_map_{safe_selecao}_{placa_selecionada or 'all'}" # Adiciona placa à chave
                         st_folium(m, width=None, height=500, key=map_key)
 
                         # Exibir métricas organizadas em 2 colunas, separadas por '-'
@@ -310,6 +332,10 @@ def show():
 
         except (ValueError, IndexError):
             st.error("Erro ao selecionar o cenário.")
+        except Exception as e_map_display: # Captura exceção geral na exibição do mapa/métricas
+             st.error(f"Erro ao exibir mapa ou métricas para o cenário selecionado: {e_map_display}")
+             st.exception(e_map_display)
+
     # <<< MODIFICADO: Movido para fora do bloco try/except do cenário >>>
     elif selecao != "Mostrar apenas pedidos" and rotas_df is None: # Se tentou carregar CSV e falhou (rotas_df ainda é None)
         st.warning("Não foi possível carregar ou exibir os dados da rota selecionada do CSV.")
@@ -318,3 +344,195 @@ def show():
 # Comentar execução direta se a navegação for centralizada
 # if __name__ == "__main__":
 #     show()
+
+# --- NOVA SEÇÃO: Análise Detalhada por Veículo ---
+st.divider()
+st.header("Análise Detalhada por Veículo", divider="rainbow")
+st.write("Selecione um veículo para ver detalhes da rota, incluindo distância, peso e tempo estimado.")
+st.divider()
+
+# Carrega dados básicos novamente (necessário aqui também)
+pedidos_todos = carregar_pedidos()
+endereco_partida_salvo, lat_partida_salva, lon_partida_salva = carregar_endereco_partida()
+default_depot_location = [lat_partida_salva, lon_partida_salva] if lat_partida_salva and lon_partida_salva else [-23.5505, -46.6333]
+
+# --- Seletor de Veículo ---
+placas_disponiveis = []
+cenarios_disponiveis = st.session_state.get('cenarios_roteirizacao', [])
+for cenario in cenarios_disponiveis:
+    rotas = cenario.get('rotas')
+    if rotas is not None and not rotas.empty and 'Veículo' in rotas.columns:
+        placas = rotas['Veículo'].dropna().unique().tolist()
+        placas_disponiveis.extend(placas)
+placas_disponiveis = list(set(placas_disponiveis)) # Remove duplicatas
+placas_disponiveis.sort()
+
+veiculo_selecionado = st.selectbox(
+    "Selecione o veículo para análise detalhada:",
+    options=placas_disponiveis,
+    index=0 if placas_disponiveis else -1,
+    help="Selecione um veículo para ver detalhes da rota, incluindo distância, peso e tempo estimado."
+)
+
+# --- Processa Seleção de Veículo ---
+if veiculo_selecionado:
+    st.info(f"Analisando dados para o veículo: {veiculo_selecionado}")
+    rotas_veiculo = []
+    for cenario in cenarios_disponiveis:
+        rotas = cenario.get('rotas')
+        if rotas is not None and not rotas.empty:
+            # Filtra apenas as rotas do veículo selecionado
+            rotas_veiculo.append(rotas[rotas['Veículo'] == veiculo_selecionado])
+
+    if rotas_veiculo:
+        # Concatena todos os DataFrames de rotas do veículo selecionado
+        rota_veiculo_selecionado = pd.concat(rotas_veiculo, ignore_index=True)
+        st.success(f"Foram encontradas {len(rota_veiculo_selecionado)} rotas para o veículo selecionado.")
+
+        # --- Tabela da Rota Selecionada ---
+        st.subheader("Tabela da Rota Selecionada")
+        st.dataframe(rota_veiculo_selecionado, use_container_width=True, hide_index=True)
+
+        # --- Cálculo da Distância Total ---
+        distancia_total_m = 0
+        matriz_distancias = None
+        if 'Node_Index_OR' in rota_veiculo_selecionado.columns:
+            # Tenta carregar a matriz de distâncias correspondente
+            try:
+                id_cenario = rota_veiculo_selecionado['ID_Cenario'].iloc[0] if not rota_veiculo_selecionado.empty else None
+                if id_cenario is not None:
+                    matriz_distancias = st.session_state.get(f"matriz_distancias_{id_cenario}")
+                    if matriz_distancias is not None:
+                        st.info("Matriz de distâncias encontrada na sessão.")
+                    else:
+                        st.warning("Matriz de distâncias não encontrada na sessão.")
+                else:
+                    st.error("ID do cenário não encontrado na rota selecionada.")
+            except Exception as e:
+                st.error(f"Erro ao carregar matriz de distâncias: {e}")
+
+        # --- Cálculo da Distância Total (continuação) ---
+        if matriz_distancias is not None and 'Node_Index_OR' in rota_veiculo_selecionado.columns:
+            node_indices = [depot_index] + rota_veiculo_selecionado.sort_values('Sequencia')['Node_Index_OR'].tolist() + [depot_index]
+            for i in range(len(node_indices) - 1):
+                idx_from = node_indices[i]
+                idx_to = node_indices[i+1]
+                if 0 <= idx_from < len(matriz_distancias) and 0 <= idx_to < len(matriz_distancias[idx_from]):
+                    distancia_total_m += matriz_distancias[idx_from][idx_to]
+                else:
+                    st.warning(f"Índice fora dos limites ao calcular distância: {idx_from} -> {idx_to}")
+
+        distancia_total_km = distancia_total_m / 1000 if distancia_total_m > 0 else 0
+        st.metric("Distância Total (km)", f"{distancia_total_km:,.1f}")
+
+        # --- Cálculo do Peso Empenhado ---
+        peso_empenhado = 0
+        if 'Demanda' in rota_veiculo_selecionado.columns:
+            # Converte para numérico, força erros para NaN, preenche NaN com 0
+            demanda_numeric = pd.to_numeric(rota_veiculo_selecionado['Demanda'], errors='coerce').fillna(0)
+            peso_empenhado = demanda_numeric.sum()
+            # Debug temporário (pode ser removido depois)
+            # st.write(f"Debug: Coluna Demanda (numeric): {demanda_numeric.tolist()}")
+            # st.write(f"Debug: Soma da Demanda: {peso_empenhado}")
+        else:
+            st.warning("Coluna 'Demanda' não encontrada para calcular peso empenhado.")
+            # st.write("Debug: Colunas disponíveis:", rota_veiculo_selecionado.columns.tolist())
+
+        st.metric("Peso Empenhado (Kg)", f"{peso_empenhado:,.1f}")
+
+        # --- Cálculo do Tempo Estimado ---
+        # Usar a distância total e uma velocidade média estimada (ex: 40 km/h)
+        velocidade_media_kmh = 40
+        tempo_estimado_h = distancia_total_km / velocidade_media_kmh if velocidade_media_kmh > 0 else 0
+        horas = int(tempo_estimado_h)
+        minutos = int((tempo_estimado_h - horas) * 60)
+        st.metric("Tempo Estimado (h)", f"{horas:02d}:{minutos:02d}")
+
+        # --- Gráfico da Rota (opcional) ---
+        st.subheader("Gráfico da Rota")
+        if 'Latitude' in rota_veiculo_selecionado.columns and 'Longitude' in rota_veiculo_selecionado.columns:
+            coords = rota_veiculo_selecionado[['Latitude', 'Longitude']].dropna().values.tolist()
+            if coords:
+                m = folium.Map(location=coords[0], zoom_start=12)
+                folium.Marker(coords[0], icon=folium.Icon(color='blue', icon='home'), tooltip='Início').add_to(m)
+                folium.Marker(coords[-1], icon=folium.Icon(color='red', icon='flag'), tooltip='Fim').add_to(m)
+                folium.PolyLine(coords, color='green', weight=2.5, opacity=0.8).add_to(m)
+                st_folium(m, width=None, height=500, key="mapa_rota_selecionada")
+            else:
+                st.warning("Nenhum ponto válido encontrado para exibir no mapa.")
+        else:
+            st.warning("As colunas 'Latitude' e 'Longitude' não foram encontradas na rota selecionada.")
+
+        # --- Métricas do veículo selecionado
+        col1_met, col2_met = st.columns(2)
+        with col1_met:
+            st.metric("Placa do Veículo", veiculo_selecionado)
+            st.metric("Pedidos Empenhados", len(rota_veiculo_selecionado))
+            # Calcular Distância Total para este veículo
+            distancia_veiculo_m = 0
+            if matriz_distancias is not None and 'Node_Index_OR' in rota_veiculo_selecionado.columns:
+                node_indices_veiculo = [depot_index] + rota_veiculo_selecionado.sort_values('Sequencia')['Node_Index_OR'].tolist() + [depot_index]
+                for i in range(len(node_indices_veiculo) - 1):
+                    idx_from = node_indices_veiculo[i]
+                    idx_to = node_indices_veiculo[i+1]
+                    if 0 <= idx_from < len(matriz_distancias) and 0 <= idx_to < len(matriz_distancias[idx_from]):
+                        distancia_veiculo_m += matriz_distancias[idx_from][idx_to]
+                    else:
+                        st.warning(f"Índice fora dos limites ao calcular distância para veículo {veiculo_selecionado}: {idx_from} -> {idx_to}")
+            st.metric("Distância Total (km)", f"{distancia_veiculo_m / 1000:,.1f}")
+
+        with col2_met:
+            # Tenta buscar a capacidade da frota do cenário, se disponível
+            capacidade_veiculo = 0
+            frota_cenario = None
+            id_cenario_atual = None
+            # Encontra o cenário correspondente para buscar a frota
+            for i, c in enumerate(cenarios_disponiveis):
+                rotas_c = c.get('rotas')
+                if rotas_c is not None and not rotas_c.empty and veiculo_selecionado in rotas_c['Veículo'].unique():
+                    # Assume que a frota usada está no mesmo cenário (pode precisar de ajuste se não for o caso)
+                    # Idealmente, a frota usada deveria ser salva junto com o cenário
+                    # Tenta buscar a frota do estado da sessão se não foi salva no cenário
+                    frota_cenario = c.get('frota_usada', st.session_state.get('frota_carregada')) # Exemplo
+                    id_cenario_atual = i
+                    break # Usa o primeiro cenário encontrado com o veículo
+
+            if frota_cenario is not None and not frota_cenario.empty:
+                id_col_frota = 'ID Veículo' if 'ID Veículo' in frota_cenario.columns else 'Placa'
+                if id_col_frota in frota_cenario.columns and 'Capacidade (Kg)' in frota_cenario.columns:
+                    veiculo_info = frota_cenario[frota_cenario[id_col_frota] == veiculo_selecionado]
+                    if not veiculo_info.empty:
+                        capacidade_veiculo = pd.to_numeric(veiculo_info['Capacidade (Kg)'].iloc[0], errors='coerce').fillna(0)
+
+            st.metric("Capacidade do Veículo (Kg)", f"{capacidade_veiculo:,.1f}")
+
+            # --- CORREÇÃO REFORÇADA AQUI ---
+            peso_empenhado = 0
+            if 'Demanda' in rota_veiculo_selecionado.columns:
+                # Converte para numérico, força erros para NaN, preenche NaN com 0
+                demanda_numeric = pd.to_numeric(rota_veiculo_selecionado['Demanda'], errors='coerce').fillna(0)
+                peso_empenhado = demanda_numeric.sum()
+                # Debug temporário (pode ser removido depois)
+                # st.write(f"Debug: Coluna Demanda (numeric): {demanda_numeric.tolist()}")
+                # st.write(f"Debug: Soma da Demanda: {peso_empenhado}")
+            else:
+                st.warning("Coluna 'Demanda' não encontrada para calcular peso empenhado.")
+                # st.write("Debug: Colunas disponíveis:", rota_veiculo_selecionado.columns.tolist())
+
+            st.metric("Peso Empenhado (Kg)", f"{peso_empenhado:,.1f}")
+            # --- FIM DA CORREÇÃO REFORÇADA ---
+
+            # Calcular Tempo Estimado (usando distância calculada anteriormente)
+            tempo_estimado_h = distancia_veiculo_m / (40 * 1000) if distancia_veiculo_m > 0 else 0 # Exemplo: 40 km/h médio
+            horas = int(tempo_estimado_h)
+            minutos = int((tempo_estimado_h - horas) * 60)
+            st.metric("Tempo Estimado (h)", f"{horas:02d}:{minutos:02d}")
+
+    else:
+        st.warning(f"Nenhuma rota encontrada nos cenários para o veículo selecionado: {veiculo_selecionado}")
+
+else: # Fim do if veiculo_selecionado
+    if placas_disponiveis:
+        st.info("Selecione um veículo na lista acima para ver a análise detalhada.")
+    else:
+        st.warning("Nenhum veículo com rotas encontradas nos cenários disponíveis para análise.")
