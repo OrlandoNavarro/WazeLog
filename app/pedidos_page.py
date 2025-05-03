@@ -144,7 +144,17 @@ def show():
             if col not in df_filtrado.columns:
                 df_filtrado[col] = ""  # valor vazio se não existir
         # Garante que as colunas estejam na ordem desejada
+        # Garante que CPF/CNPJ sempre estará presente no DataFrame e na tabela editável
+        if "CPF/CNPJ" not in df_filtrado.columns:
+            df_filtrado["CPF/CNPJ"] = ""
         colunas_editor = [c for c in df_filtrado.columns if c != 'Janela de Descarga']
+        if "CPF/CNPJ" not in colunas_editor:
+            # Tenta inserir após Cód. Cliente, se existir, senão no início
+            if "Cód. Cliente" in colunas_editor:
+                idx = colunas_editor.index("Cód. Cliente") + 1
+                colunas_editor.insert(idx, "CPF/CNPJ")
+            else:
+                colunas_editor.insert(0, "CPF/CNPJ")
         for col in ["Janela Início", "Janela Fim", "Tempo de Serviço"]:
             if col not in colunas_editor:
                 colunas_editor.append(col)

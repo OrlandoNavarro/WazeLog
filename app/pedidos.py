@@ -140,6 +140,21 @@ def processar_pedidos(arquivo, max_linhas=None, tamanho_lote=20, delay_lote=5):
     else:
         raise ValueError('Formato de arquivo não suportado.')
 
+    # Garante que a coluna CPF/CNPJ exista e tenta preencher a partir de CNPJ ou CPF se necessário
+    if 'CPF/CNPJ' not in df.columns:
+        if 'CNPJ' in df.columns:
+            df['CPF/CNPJ'] = df['CNPJ']
+        elif 'CPF' in df.columns:
+            df['CPF/CNPJ'] = df['CPF']
+        else:
+            df['CPF/CNPJ'] = ''
+    else:
+        # Se existir, mas está toda vazia e existe CNPJ ou CPF, tenta preencher
+        if df['CPF/CNPJ'].isnull().all() or (df['CPF/CNPJ'] == '').all():
+            if 'CNPJ' in df.columns:
+                df['CPF/CNPJ'] = df['CNPJ']
+            elif 'CPF' in df.columns:
+                df['CPF/CNPJ'] = df['CPF']
     # --- Lógica de Endereço Ajustada ---
     # Verifica se 'Endereço Completo' já existe
     if 'Endereço Completo' not in df.columns:
