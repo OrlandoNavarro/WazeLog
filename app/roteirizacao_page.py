@@ -282,8 +282,20 @@ def show():
                                      status_solver = "OK" if rotas_df is not None and not rotas_df.empty else "Falha ou Sem Solução"
                             elif tipo == "CVRP Flex":
                                 rotas = solver_cvrp_flex(pedidos_validos, frota, matriz_distancias, depot_index=depot_index, ajuste_capacidade_pct=ajuste_capacidade_pct)
-                                rotas_df = rotas
-                                status_solver = "OK" if rotas_df is not None and not rotas_df.empty else "Falha ou Sem Solução"
+                                # Se o solver retornar dict, tenta extrair o DataFrame
+                                if isinstance(rotas, dict):
+                                    # Tenta extrair a chave 'rotas' ou 'routes' ou converter o maior DataFrame do dict
+                                    if 'rotas' in rotas:
+                                        rotas_df = rotas['rotas']
+                                    elif 'routes' in rotas:
+                                        rotas_df = rotas['routes']
+                                    else:
+                                        # Procura o maior DataFrame no dict
+                                        dfs = [v for v in rotas.values() if isinstance(v, pd.DataFrame)]
+                                        rotas_df = dfs[0] if dfs else pd.DataFrame()
+                                else:
+                                    rotas_df = rotas
+                                status_solver = "OK" if rotas_df is not None and isinstance(rotas_df, pd.DataFrame) and not rotas_df.empty else "Falha ou Sem Solução"
 
                         except ValueError as ve:
                              st.error(f"Erro de dados ao preparar para {tipo}: {ve}")
@@ -376,6 +388,24 @@ def show():
                             st.session_state.cenarios_roteirizacao.insert(0, cenario)
                         else:
                             st.info(f"Nenhuma rota gerada para {tipo}. Status: {status_solver}")
+
+                            # Diagnóstico detalhado para solver sem solução
+                            st.warning("""
+**Diagnóstico detalhado: Nenhuma rota foi gerada. Possíveis causas:**
+
+- **Pedidos com demanda maior que a capacidade máxima dos veículos:**
+    - Verifique se algum pedido tem 'Peso dos Itens' maior que a maior 'Capacidade (Kg)' da frota.
+- **Frota vazia ou sem veículos disponíveis:**
+    - Confirme se há veículos cadastrados e disponíveis, e se todos têm capacidade maior que zero.
+- **Pedidos sem coordenadas válidas:**
+    - Todos os pedidos devem ter 'Latitude' e 'Longitude' válidas.
+- **Dados inconsistentes ou restrições muito rígidas:**
+    - Janelas de tempo, capacidades ou outros parâmetros podem estar impossibilitando a solução.
+- **Todos os pedidos já estão alocados ou não há pedidos válidos:**
+    - Verifique se há pedidos realmente roteirizáveis.
+
+Se necessário, revise os dados de entrada, relaxe restrições ou tente com um conjunto menor de pedidos.
+""")
 
                     else:
                          st.error(f"Não foi possível executar a roteirização ({tipo}) devido a erros anteriores. Status: {status_solver}")
