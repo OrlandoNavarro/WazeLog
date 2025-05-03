@@ -286,7 +286,7 @@ def processar_pedidos(arquivo, max_linhas=None, tamanho_lote=20, delay_lote=5):
 
     # Reorganizar colunas na ordem desejada (adapta se colunas não existirem)
     colunas_ordem_base = [
-        "Nº Pedido", "Cód. Cliente", "Nome Cliente", "Grupo Cliente",
+        "Nº Pedido", "Cód. Cliente", "CPF/CNPJ", "Nome Cliente", "Grupo Cliente",
         "Região", "Endereço Completo", "Qtde. dos Itens", "Peso dos Itens",
         "Latitude", "Longitude", "Janela de Descarga", "Anomalia"
     ]
