@@ -30,6 +30,7 @@ def init_db():
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         numero_pedido TEXT,
         cod_cliente TEXT,
+        cnpj TEXT,
         nome_cliente TEXT,
         grupo_cliente TEXT,
         regiao TEXT,
@@ -155,6 +156,7 @@ def salvar_pedidos(df):
     df = df.rename(columns={
         'Nº Pedido': 'numero_pedido',
         'Cód. Cliente': 'cod_cliente',
+        'CNPJ': 'cnpj',
         'Nome Cliente': 'nome_cliente',
         'Grupo Cliente': 'grupo_cliente',
         'Região': 'regiao',
@@ -181,6 +183,7 @@ def carregar_pedidos():
         df = df.rename(columns={
             'numero_pedido': 'Nº Pedido',
             'cod_cliente': 'Cód. Cliente',
+            'cnpj': 'CNPJ',
             'nome_cliente': 'Nome Cliente',
             'grupo_cliente': 'Grupo Cliente',
             'regiao': 'Região',
@@ -198,7 +201,7 @@ def carregar_pedidos():
                 df = df.drop(columns=[col])
         # Reorganizar colunas na ordem desejada
         colunas_ordem = [
-            "Nº Pedido", "Cód. Cliente", "Nome Cliente", "Grupo Cliente",
+            "Nº Pedido", "Cód. Cliente", "CNPJ", "Nome Cliente", "Grupo Cliente",
             "Região", "Endereço Completo", "Qtde. dos Itens", "Peso dos Itens",
             "Latitude", "Longitude", "Janela de Descarga", "Anomalia"
         ]

@@ -144,17 +144,17 @@ def show():
             if col not in df_filtrado.columns:
                 df_filtrado[col] = ""  # valor vazio se não existir
         # Garante que as colunas estejam na ordem desejada
-        # Garante que CPF/CNPJ sempre estará presente no DataFrame e na tabela editável
-        if "CPF/CNPJ" not in df_filtrado.columns:
-            df_filtrado["CPF/CNPJ"] = ""
+        # Garante que CNPJ sempre estará presente no DataFrame e na tabela editável
+        if "CNPJ" not in df_filtrado.columns:
+            df_filtrado["CNPJ"] = ""
         colunas_editor = [c for c in df_filtrado.columns if c != 'Janela de Descarga']
-        if "CPF/CNPJ" not in colunas_editor:
+        if "CNPJ" not in colunas_editor:
             # Tenta inserir após Cód. Cliente, se existir, senão no início
             if "Cód. Cliente" in colunas_editor:
                 idx = colunas_editor.index("Cód. Cliente") + 1
-                colunas_editor.insert(idx, "CPF/CNPJ")
+                colunas_editor.insert(idx, "CNPJ")
             else:
-                colunas_editor.insert(0, "CPF/CNPJ")
+                colunas_editor.insert(0, "CNPJ")
         for col in ["Janela Início", "Janela Fim", "Tempo de Serviço"]:
             if col not in colunas_editor:
                 colunas_editor.append(col)
@@ -260,7 +260,7 @@ def show():
         with col1:
             numero = st.text_input("Nº Pedido")
             cod_cliente = st.text_input("Cód. Cliente")
-            cpf_cnpj = st.text_input("CPF/CNPJ")
+            cnpj = st.text_input("CNPJ")
             nome_cliente = st.text_input("Nome Cliente")
             grupo_cliente = st.text_input("Grupo Cliente")
         with col2:
@@ -282,7 +282,7 @@ def show():
             novo = {
                 "Nº Pedido": numero,
                 "Cód. Cliente": cod_cliente,
-                "CPF/CNPJ": cpf_cnpj,
+                "CNPJ": cnpj,
                 "Nome Cliente": nome_cliente,
                 "Grupo Cliente": grupo_cliente,
                 "Endereço de Entrega": endereco_entrega,

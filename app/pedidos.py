@@ -52,27 +52,27 @@ def carregar_coordenadas_salvas():
         return {}
     try:
         df = pd.read_csv(csv_path, dtype=str)
-        return {(str(row['CPF/CNPJ']) + '|' + str(row['Endereço Completo'])): (float(row['Latitude']), float(row['Longitude']))
+        return {(str(row['CNPJ']) + '|' + str(row['Endereço Completo'])): (float(row['Latitude']), float(row['Longitude']))
                 for _, row in df.iterrows() if pd.notnull(row['Latitude']) and pd.notnull(row['Longitude'])}
     except Exception:
         return {}
 
 def buscar_coordenadas_no_dict(endereco, coord_dict):
-    # Agora a chave é CPF/CNPJ|Endereço Completo
-    cpf_cnpj = None
+    # Agora a chave é CNPJ|Endereço Completo
+    cnpj = None
     endereco_completo = None
     if isinstance(endereco, dict):
-        cpf_cnpj = endereco.get('CPF/CNPJ', '')
+        cnpj = endereco.get('CNPJ', '')
         endereco_completo = endereco.get('Endereço Completo', '')
     else:
-        # Para compatibilidade, assume que endereco é o endereço completo e CPF/CNPJ não está disponível
+        # Para compatibilidade, assume que endereco é o endereço completo e CNPJ não está disponível
         endereco_completo = endereco
     for key in coord_dict:
-        if cpf_cnpj and key.startswith(str(cpf_cnpj)+'|') and key.endswith(endereco_completo):
+        if cnpj and key.startswith(str(cnpj)+'|') and key.endswith(endereco_completo):
             lat, lon = coord_dict[key]
             if pd.notnull(lat) and pd.notnull(lon):
                 return lat, lon
-        elif not cpf_cnpj and key.endswith(endereco_completo):
+        elif not cnpj and key.endswith(endereco_completo):
             lat, lon = coord_dict[key]
             if pd.notnull(lat) and pd.notnull(lon):
                 return lat, lon
@@ -80,19 +80,19 @@ def buscar_coordenadas_no_dict(endereco, coord_dict):
 
 def obter_coordenadas(endereco):
     # Busca apenas em APIs externas, pois a busca no banco já é feita no fluxo principal
-    cpf_cnpj = None
+    cnpj = None
     if isinstance(endereco, dict):
-        cpf_cnpj = endereco.get('CPF/CNPJ', None)
+        cnpj = endereco.get('CNPJ', None)
         endereco_completo = endereco.get('Endereço Completo', None)
     else:
         endereco_completo = endereco
     lat, lon = obter_coordenadas_opencage(endereco_completo)
     if lat is not None and lon is not None:
-        salvar_coordenada_csv(cpf_cnpj, endereco_completo, lat, lon)
+        salvar_coordenada_csv(cnpj, endereco_completo, lat, lon)
         return lat, lon
     lat, lon = obter_coordenadas_nominatim(endereco_completo)
     if lat is not None and lon is not None:
-        salvar_coordenada_csv(cpf_cnpj, endereco_completo, lat, lon)
+        salvar_coordenada_csv(cnpj, endereco_completo, lat, lon)
     return lat, lon
 
 # Função para salvar coordenada no CSV
@@ -104,13 +104,13 @@ def salvar_coordenada_csv(cpf_cnpj, endereco_completo, latitude, longitude):
     if os.path.exists(csv_path):
         df = pd.read_csv(csv_path, dtype=str)
     else:
-        df = pd.DataFrame(columns=['CPF/CNPJ', 'Endereço Completo', 'Latitude', 'Longitude'])
+        df = pd.DataFrame(columns=['CNPJ', 'Endereço Completo', 'Latitude', 'Longitude'])
     # Remove duplicata se já existir
-    mask = (df['CPF/CNPJ'] == str(cpf_cnpj)) & (df['Endereço Completo'] == str(endereco_completo))
+    mask = (df['CNPJ'] == str(cpf_cnpj)) & (df['Endereço Completo'] == str(endereco_completo))
     df = df[~mask]
     # Adiciona nova linha
     new_row = {
-        'CPF/CNPJ': str(cpf_cnpj) if cpf_cnpj is not None else '',
+        'CNPJ': str(cpf_cnpj) if cpf_cnpj is not None else '',
         'Endereço Completo': str(endereco_completo),
         'Latitude': str(latitude),
         'Longitude': str(longitude)
