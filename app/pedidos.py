@@ -140,21 +140,20 @@ def processar_pedidos(arquivo, max_linhas=None, tamanho_lote=20, delay_lote=5):
     else:
         raise ValueError('Formato de arquivo não suportado.')
 
-    # Garante que a coluna CPF/CNPJ exista e tenta preencher a partir de CNPJ ou CPF se necessário
-    if 'CPF/CNPJ' not in df.columns:
-        if 'CNPJ' in df.columns:
-            df['CPF/CNPJ'] = df['CNPJ']
-        elif 'CPF' in df.columns:
-            df['CPF/CNPJ'] = df['CPF']
-        else:
-            df['CPF/CNPJ'] = ''
-    else:
-        # Se existir, mas está toda vazia e existe CNPJ ou CPF, tenta preencher
-        if df['CPF/CNPJ'].isnull().all() or (df['CPF/CNPJ'] == '').all():
-            if 'CNPJ' in df.columns:
-                df['CPF/CNPJ'] = df['CNPJ']
-            elif 'CPF' in df.columns:
-                df['CPF/CNPJ'] = df['CPF']
+    # Garante que a coluna CNPJ exista e esteja formatada corretamente
+    import re
+    def formatar_cnpj(cnpj):
+        if pd.isnull(cnpj):
+            return ''
+        cnpj_str = re.sub(r'\D', '', str(cnpj))
+        if len(cnpj_str) == 14:
+            return f"{cnpj_str[:2]}.{cnpj_str[2:5]}.{cnpj_str[5:8]}/{cnpj_str[8:12]}-{cnpj_str[12:]}"
+        return cnpj
+
+    if 'CNPJ' in df.columns:
+        df['CNPJ'] = df['CNPJ'].apply(formatar_cnpj)
+
+    # Não é mais necessário remover a coluna CPF/CNPJ, pois ela não será criada
     # --- Lógica de Endereço Ajustada ---
     # Verifica se 'Endereço Completo' já existe
     if 'Endereço Completo' not in df.columns:
@@ -301,7 +300,7 @@ def processar_pedidos(arquivo, max_linhas=None, tamanho_lote=20, delay_lote=5):
 
     # Reorganizar colunas na ordem desejada (adapta se colunas não existirem)
     colunas_ordem_base = [
-        "Nº Pedido", "Cód. Cliente", "CPF/CNPJ", "Nome Cliente", "Grupo Cliente",
+        "Nº Pedido", "Cód. Cliente", "CNPJ", "Nome Cliente", "Grupo Cliente",
         "Região", "Endereço Completo", "Qtde. dos Itens", "Peso dos Itens",
         "Latitude", "Longitude", "Janela de Descarga", "Anomalia"
     ]
