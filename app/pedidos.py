@@ -16,9 +16,6 @@ key_cycle = itertools.cycle(OPENCAGE_KEYS)
 
 def definir_regiao(row):
     cidade = str(row.get("Cidade de Entrega", "")).strip()
-    bairro = str(row.get("Bairro de Entrega", "")).strip()
-    if cidade.lower() == "são paulo":
-        return f"{cidade} - {bairro}" if bairro else cidade
     return cidade
 
 def obter_coordenadas_opencage(endereco):
@@ -49,43 +46,77 @@ def obter_coordenadas_nominatim(endereco):
     return None, None
 
 def carregar_coordenadas_salvas():
-    db_path = os.path.join(os.path.dirname(__file__), '..', 'database', 'wazelog.db')
-    if not os.path.exists(db_path):
+    # Agora carrega de um CSV simples
+    csv_path = os.path.join(os.path.dirname(__file__), '..', 'database', 'coordenadas.csv')
+    if not os.path.exists(csv_path):
         return {}
-    conn = sqlite3.connect(db_path)
     try:
-        df = pd.read_sql('SELECT endereco_completo, latitude, longitude FROM coordenadas', conn)
-        return {row['endereco_completo']: (row['latitude'], row['longitude']) for _, row in df.iterrows()}
+        df = pd.read_csv(csv_path, dtype=str)
+        return {(str(row['CPF/CNPJ']) + '|' + str(row['Endereço Completo'])): (float(row['Latitude']), float(row['Longitude']))
+                for _, row in df.iterrows() if pd.notnull(row['Latitude']) and pd.notnull(row['Longitude'])}
     except Exception:
         return {}
-    finally:
-        conn.close()
 
 def buscar_coordenadas_no_dict(endereco, coord_dict):
-    if endereco in coord_dict:
-        lat, lon = coord_dict[endereco]
-        if pd.notnull(lat) and pd.notnull(lon):
-            return lat, lon
+    # Agora a chave é CPF/CNPJ|Endereço Completo
+    cpf_cnpj = None
+    endereco_completo = None
+    if isinstance(endereco, dict):
+        cpf_cnpj = endereco.get('CPF/CNPJ', '')
+        endereco_completo = endereco.get('Endereço Completo', '')
+    else:
+        # Para compatibilidade, assume que endereco é o endereço completo e CPF/CNPJ não está disponível
+        endereco_completo = endereco
+    for key in coord_dict:
+        if cpf_cnpj and key.startswith(str(cpf_cnpj)+'|') and key.endswith(endereco_completo):
+            lat, lon = coord_dict[key]
+            if pd.notnull(lat) and pd.notnull(lon):
+                return lat, lon
+        elif not cpf_cnpj and key.endswith(endereco_completo):
+            lat, lon = coord_dict[key]
+            if pd.notnull(lat) and pd.notnull(lon):
+                return lat, lon
     return None, None
 
 def obter_coordenadas(endereco):
     # Busca apenas em APIs externas, pois a busca no banco já é feita no fluxo principal
-    lat, lon = obter_coordenadas_opencage(endereco)
+    cpf_cnpj = None
+    if isinstance(endereco, dict):
+        cpf_cnpj = endereco.get('CPF/CNPJ', None)
+        endereco_completo = endereco.get('Endereço Completo', None)
+    else:
+        endereco_completo = endereco
+    lat, lon = obter_coordenadas_opencage(endereco_completo)
     if lat is not None and lon is not None:
-        try:
-            from app.database import salvar_coordenada
-            salvar_coordenada(endereco, lat, lon)
-        except Exception:
-            pass
+        salvar_coordenada_csv(cpf_cnpj, endereco_completo, lat, lon)
         return lat, lon
-    lat, lon = obter_coordenadas_nominatim(endereco)
+    lat, lon = obter_coordenadas_nominatim(endereco_completo)
     if lat is not None and lon is not None:
-        try:
-            from app.database import salvar_coordenada
-            salvar_coordenada(endereco, lat, lon)
-        except Exception:
-            pass
+        salvar_coordenada_csv(cpf_cnpj, endereco_completo, lat, lon)
     return lat, lon
+
+# Função para salvar coordenada no CSV
+def salvar_coordenada_csv(cpf_cnpj, endereco_completo, latitude, longitude):
+    import pandas as pd
+    import os
+    csv_path = os.path.join(os.path.dirname(__file__), '..', 'database', 'coordenadas.csv')
+    # Carrega ou cria DataFrame
+    if os.path.exists(csv_path):
+        df = pd.read_csv(csv_path, dtype=str)
+    else:
+        df = pd.DataFrame(columns=['CPF/CNPJ', 'Endereço Completo', 'Latitude', 'Longitude'])
+    # Remove duplicata se já existir
+    mask = (df['CPF/CNPJ'] == str(cpf_cnpj)) & (df['Endereço Completo'] == str(endereco_completo))
+    df = df[~mask]
+    # Adiciona nova linha
+    new_row = {
+        'CPF/CNPJ': str(cpf_cnpj) if cpf_cnpj is not None else '',
+        'Endereço Completo': str(endereco_completo),
+        'Latitude': str(latitude),
+        'Longitude': str(longitude)
+    }
+    df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
+    df.to_csv(csv_path, index=False)
 
 def processar_pedidos(arquivo, max_linhas=None, tamanho_lote=20, delay_lote=5):
     nome = arquivo.name if hasattr(arquivo, 'name') else str(arquivo)
@@ -112,16 +143,21 @@ def processar_pedidos(arquivo, max_linhas=None, tamanho_lote=20, delay_lote=5):
     # --- Lógica de Endereço Ajustada ---
     # Verifica se 'Endereço Completo' já existe
     if 'Endereço Completo' not in df.columns:
-        # Se não existe, tenta criar a partir das outras colunas
-        colunas_endereco_necessarias = ['Endereço de Entrega', 'Bairro de Entrega', 'Cidade de Entrega']
+        # Agora inclui 'Estado de Entrega'
+        colunas_endereco_necessarias = [
+            'Endereço de Entrega', 'Bairro de Entrega', 'Cidade de Entrega', 'Estado de Entrega'
+        ]
         colunas_faltantes = [col for col in colunas_endereco_necessarias if col not in df.columns]
 
         if not colunas_faltantes:
-            st.info("Coluna 'Endereço Completo' não encontrada. Criando a partir de 'Endereço de Entrega', 'Bairro', 'Cidade'.")
+            st.info("Coluna 'Endereço Completo' não encontrada. Criando a partir de 'Endereço de Entrega', 'Bairro', 'Cidade', 'Estado'.")
             # Garante que as colunas são string antes de concatenar, tratando nulos
-            df['Endereço Completo'] = df['Endereço de Entrega'].fillna('').astype(str) + ', ' + \
-                                     df['Bairro de Entrega'].fillna('').astype(str) + ', ' + \
-                                     df['Cidade de Entrega'].fillna('').astype(str)
+            df['Endereço Completo'] = (
+                df['Endereço de Entrega'].fillna('').astype(str) + ', ' +
+                df['Bairro de Entrega'].fillna('').astype(str) + ', ' +
+                df['Cidade de Entrega'].fillna('').astype(str) + ', ' +
+                df['Estado de Entrega'].fillna('').astype(str)
+            )
             # Limpa espaços extras e vírgulas redundantes
             df['Endereço Completo'] = df['Endereço Completo'].str.replace(r'^,\s*|,?\s*,\s*$', '', regex=True).str.strip()
             df['Endereço Completo'] = df['Endereço Completo'].str.replace(r'\s*,\s*,', ',', regex=True) # Remove vírgulas duplas
@@ -130,10 +166,12 @@ def processar_pedidos(arquivo, max_linhas=None, tamanho_lote=20, delay_lote=5):
             try:
                 df = df.drop(colunas_endereco_necessarias, axis=1)
             except KeyError:
-                 st.warning("Não foi possível remover colunas de endereço originais após criar 'Endereço Completo'.")
+                st.warning("Não foi possível remover colunas de endereço originais após criar 'Endereço Completo'.")
         else:
             # Se 'Endereço Completo' não existe E as colunas para criá-lo também não, levanta erro
-            raise ValueError(f"Erro: Coluna 'Endereço Completo' não encontrada e colunas necessárias para criá-la ({', '.join(colunas_faltantes)}) também estão ausentes.")
+            raise ValueError(
+                f"Erro: Coluna 'Endereço Completo' não encontrada e colunas necessárias para criá-la ({', '.join(colunas_faltantes)}) também estão ausentes."
+            )
     else:
         st.info("Coluna 'Endereço Completo' encontrada no arquivo. Usando-a diretamente.")
         # Garante que a coluna existente seja string
@@ -162,21 +200,16 @@ def processar_pedidos(arquivo, max_linhas=None, tamanho_lote=20, delay_lote=5):
         df['Tempo de Serviço'] = df['Tempo de Serviço'].fillna('').replace('', '00:30')
 
     # --- Continua o processamento ---
-    # Definir Região (Tenta usar Cidade/Bairro se existirem, senão usa uma lógica baseada no Endereço Completo se possível)
-    if 'Cidade de Entrega' in df.columns and 'Bairro de Entrega' in df.columns:
-         df['Região'] = df.apply(definir_regiao, axis=1) # Usa a função original
-         # Remove colunas de cidade/bairro se ainda existirem (caso 'Endereço Completo' já existisse)
-         try:
-             df = df.drop(['Bairro de Entrega', 'Cidade de Entrega'], axis=1, errors='ignore')
-         except KeyError:
-             pass # Ignora se já foram removidas
+    # Definir Região apenas pela Cidade de Entrega
+    if 'Cidade de Entrega' in df.columns:
+        df['Região'] = df['Cidade de Entrega'].astype(str).str.strip()
     else:
-         # Tenta extrair cidade do endereço completo (simplificado)
-         try:
-            df['Região'] = df['Endereço Completo'].str.split(',').str[-1].str.strip()
-         except Exception:
+        # Tenta extrair cidade do endereço completo (simplificado)
+        try:
+            df['Região'] = df['Endereço Completo'].str.split(',').str[-2].str.strip()
+        except Exception:
             df['Região'] = 'N/A' # Fallback
-         st.warning("Colunas 'Cidade de Entrega'/'Bairro de Entrega' não encontradas. 'Região' definida a partir do 'Endereço Completo' (pode ser impreciso).")
+        st.warning("Coluna 'Cidade de Entrega' não encontrada. 'Região' definida a partir do 'Endereço Completo' (pode ser impreciso).")
 
 
     # Limitar número de linhas para teste, se max_linhas for fornecido

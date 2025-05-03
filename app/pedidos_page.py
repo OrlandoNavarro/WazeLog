@@ -250,38 +250,39 @@ def show():
         with col1:
             numero = st.text_input("Nº Pedido")
             cod_cliente = st.text_input("Cód. Cliente")
+            cpf_cnpj = st.text_input("CPF/CNPJ")
             nome_cliente = st.text_input("Nome Cliente")
             grupo_cliente = st.text_input("Grupo Cliente")
         with col2:
-            regiao = st.text_input("Região")
             endereco_entrega = st.text_input("Endereço de Entrega")
             bairro_entrega = st.text_input("Bairro de Entrega")
             cidade_entrega = st.text_input("Cidade de Entrega")
-            endereco_completo = st.text_input("Endereço Completo", value="", disabled=True)
+            estado_entrega = st.text_input("Estado de Entrega")
             qtde_itens = st.number_input("Qtde. dos Itens", min_value=0, step=1)
             peso_itens = st.number_input("Peso dos Itens", min_value=0.0, step=1.0, format="%.2f")
         with col3:
             latitude = st.number_input("Latitude", format="%.14f", value=-23.51689237191825)
             longitude = st.number_input("Longitude", format="%.14f", value=-46.48921155767101)
             anomalia = st.checkbox("Anomalia")
+        # Endereço Completo gerado automaticamente
+        endereco_completo_final = f"{endereco_entrega}, {bairro_entrega}, {cidade_entrega}, {estado_entrega}".strip(', ')
+        regiao_final = f"{cidade_entrega} - {bairro_entrega}" if cidade_entrega.strip().lower() == "são paulo" and bairro_entrega else cidade_entrega
         submitted = st.form_submit_button("Adicionar pedido")
         if submitted and numero:
-            # Gerar Região automaticamente se não preenchida
-            regiao_final = regiao.strip() if regiao.strip() else (f"{cidade_entrega} - {bairro_entrega}" if cidade_entrega.lower() == "são paulo" and bairro_entrega else cidade_entrega)
-            # Gerar Endereço Completo automaticamente
-            endereco_completo_final = f"{endereco_entrega}, {bairro_entrega}, {cidade_entrega}"
             novo = {
                 "Nº Pedido": numero,
                 "Cód. Cliente": cod_cliente,
+                "CPF/CNPJ": cpf_cnpj,
                 "Nome Cliente": nome_cliente,
                 "Grupo Cliente": grupo_cliente,
-                "Região": regiao_final,
-                "Endereço Completo": endereco_completo_final,
                 "Endereço de Entrega": endereco_entrega,
                 "Bairro de Entrega": bairro_entrega,
                 "Cidade de Entrega": cidade_entrega,
+                "Estado de Entrega": estado_entrega,
                 "Qtde. dos Itens": qtde_itens,
                 "Peso dos Itens": peso_itens,
+                "Endereço Completo": endereco_completo_final,
+                "Região": regiao_final,
                 "Latitude": latitude,
                 "Longitude": longitude,
                 "Anomalia": anomalia
