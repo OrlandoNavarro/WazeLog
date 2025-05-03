@@ -276,8 +276,8 @@ def show():
                                      st.error("Coluna 'Capacidade (Kg)' necessária para CVRP não encontrada na frota.")
                                      raise ValueError("Faltando 'Capacidade (Kg)'")
                                 else:
-                                     # Passa a matriz de distâncias
-                                     rotas = solver_cvrp(pedidos_validos, frota, matriz_distancias, depot_index=depot_index, ajuste_capacidade_pct=ajuste_capacidade_pct)
+                                     # Passa a matriz de distâncias - CORRIGIDO: Removidos argumentos extras
+                                     rotas = solver_cvrp(pedidos_validos, frota, matriz_distancias)
                                      rotas_df = rotas # Resultado já é DataFrame
                                      status_solver = "OK" if rotas_df is not None and not rotas_df.empty else "Falha ou Sem Solução"
                             elif tipo == "CVRP Flex":
@@ -346,9 +346,30 @@ def show():
                                 st.error(f"Erro ao salvar o arquivo CSV: {save_err}")
                             # <<< FIM DO CÓDIGO ADICIONADO >>>
 
+                            # <<< DEBUGGING >>>
+                            st.write("--- Debug Info para Cálculo de Distância ---")
+                            st.write(f"Tipo de matriz_distancias: {type(matriz_distancias)}")
+                            if isinstance(matriz_distancias, (list, np.ndarray)):
+                                try:
+                                    st.write(f"Shape/Len de matriz_distancias: {np.array(matriz_distancias).shape}")
+                                except Exception as e:
+                                    st.write(f"Erro ao obter shape da matriz: {e}")
+                            else:
+                                st.write("matriz_distancias não é lista ou array numpy.")
+                            st.write(f"Tipo de rotas_df: {type(rotas_df)}")
+                            if isinstance(rotas_df, pd.DataFrame):
+                                st.write(f"rotas_df está vazio: {rotas_df.empty}")
+                                st.write(f"Colunas em rotas_df: {rotas_df.columns.tolist()}")
+                                st.write(f"\'Veículo\' nas colunas: {'Veículo' in rotas_df.columns}")
+                                st.write(f"\'Node_Index_OR\' nas colunas: {'Node_Index_OR' in rotas_df.columns}")
+                            else:
+                                st.write("rotas_df não é um DataFrame.")
+                            st.write("--- Fim Debug Info ---")
+                            # <<< END DEBUGGING >>>
 
                             distancia_total_real_m = 0
-                            if matriz_distancias is not None and 'Veículo' in rotas_df.columns and 'Node_Index_OR' in rotas_df.columns:
+                            # Adicionado isinstance(rotas_df, pd.DataFrame) e not rotas_df.empty para segurança
+                            if matriz_distancias is not None and isinstance(rotas_df, pd.DataFrame) and not rotas_df.empty and 'Veículo' in rotas_df.columns and 'Node_Index_OR' in rotas_df.columns:
                                 try:
                                     for veiculo, rota_veiculo in rotas_df.groupby('Veículo'):
                                         rota_veiculo = rota_veiculo.sort_values('Sequencia')
@@ -367,8 +388,12 @@ def show():
                                     st.warning(f"Não foi possível calcular a distância total real a partir das rotas: {calc_dist_e}")
                                     distancia_total_real_m = None
                             else:
-                                 st.warning("Matriz de distâncias ou colunas necessárias não disponíveis para calcular a distância total real.")
-                                 distancia_total_real_m = None
+                                 # Mensagem de aviso movida para cá e ajustada
+                                 if isinstance(rotas_df, pd.DataFrame) and rotas_df.empty:
+                                     st.info("Nenhuma rota foi gerada pelo solver, portanto a distância total não pode ser calculada.")
+                                 else:
+                                     st.warning("Matriz de distâncias ou colunas necessárias não disponíveis para calcular a distância total real.")
+                                 distancia_total_real_m = None # Garante que seja None se não calculado
 
                             cenario = {
                                 'data': pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S'),
