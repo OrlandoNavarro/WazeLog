@@ -44,7 +44,8 @@ def buscar_endereco_cnpj(cnpj):
 
     Retorna um dicionário com:
     'logradouro', 'numero', 'complemento', 'bairro', 'municipio', 'uf', 'cep',
-    'situacao', 'telefone', 'email'.
+    'situacao', 'telefone', 'email', 'nome_empresarial', 'ocorrencia_fiscal', 'regime_apuracao',
+    'suframa_ativo', 'numero_inscricao_suframa'.
     Retorna None para campos não encontrados.
     """
     cnpj_limpo = re.sub(r'\\D', '', str(cnpj))
@@ -54,7 +55,10 @@ def buscar_endereco_cnpj(cnpj):
         return {
             'logradouro': None, 'numero': None, 'complemento': None, 'bairro': None,
             'municipio': None, 'uf': None, 'cep': None, 'situacao': 'Inválido',
-            'telefone': None, 'email': None
+            'telefone': None, 'email': None, 'nome_empresarial': None,
+            'ocorrencia_fiscal': None, 'regime_apuracao': None,
+            'suframa_ativo': None,
+            'numero_inscricao_suframa': None # Novo campo
         }
 
     apis = [
@@ -71,7 +75,12 @@ def buscar_endereco_cnpj(cnpj):
                 "cep": formatar_cep(data.get('cep')),
                 "situacao": data.get('situacao_cadastral') or data.get('situacao'),
                 "telefone": formatar_telefone(data.get('ddd_telefone_1'), data.get('telefone_1')),
-                "email": data.get('email')
+                "email": data.get('email'),
+                "nome_empresarial": data.get('razao_social'),
+                "ocorrencia_fiscal": data.get('descricao_situacao_cadastral'), # Ou outro campo relevante
+                "regime_apuracao": data.get('opcao_pelo_simples'), # Exemplo, pode variar
+                "suframa_ativo": data.get('inscricao_suframa'), # Campo hipotético para status
+                "numero_inscricao_suframa": data.get('inscricao_suframa') # Campo hipotético para número
             }
         },
         {
@@ -87,7 +96,13 @@ def buscar_endereco_cnpj(cnpj):
                 "cep": formatar_cep(data.get('estabelecimento', {}).get('cep')),
                 "situacao": data.get('estabelecimento', {}).get('situacao_cadastral') or data.get('estabelecimento', {}).get('situacao'),
                 "telefone": formatar_telefone(data.get('estabelecimento', {}).get('ddd1'), data.get('estabelecimento', {}).get('telefone1')),
-                "email": data.get('estabelecimento', {}).get('email')
+                "email": data.get('estabelecimento', {}).get('email'),
+                "nome_empresarial": data.get('razao_social'),
+                "ocorrencia_fiscal": data.get('estabelecimento', {}).get('situacao_especial', {}).get('nome'), # Exemplo
+                "regime_apuracao": data.get('simples', {}).get('simples'), # Exemplo
+                # Tenta pegar status e número da mesma fonte, se disponível
+                "suframa_ativo": data.get('estabelecimento', {}).get('inscricoes_estaduais', [{}])[0].get('inscricao_suframa_status'), # Hipotético,
+                "numero_inscricao_suframa": data.get('estabelecimento', {}).get('inscricoes_estaduais', [{}])[0].get('inscricao_suframa') # Hipotético
             }
         },
         {
@@ -103,7 +118,12 @@ def buscar_endereco_cnpj(cnpj):
                 "cep": formatar_cep(data.get('cep')),
                 "situacao": data.get('situacao'),
                 "telefone": formatar_telefone('', data.get('telefone')), # ReceitaWS pode ter DDD junto
-                "email": data.get('email')
+                "email": data.get('email'),
+                "nome_empresarial": data.get('nome'), # ReceitaWS usa 'nome' para razão social
+                "ocorrencia_fiscal": data.get('motivo_situacao'), # Exemplo
+                "regime_apuracao": data.get('opcao_pelo_simples'), # Exemplo
+                "suframa_ativo": data.get('inscricao_suframa'), # Campo hipotético para status
+                "numero_inscricao_suframa": data.get('inscricao_suframa') # Campo hipotético para número
             }
         },
     ]
@@ -112,7 +132,10 @@ def buscar_endereco_cnpj(cnpj):
     resultado = {
         'logradouro': None, 'numero': None, 'complemento': None, 'bairro': None,
         'municipio': None, 'uf': None, 'cep': None, 'situacao': None,
-        'telefone': None, 'email': None
+        'telefone': None, 'email': None, 'nome_empresarial': None,
+        'ocorrencia_fiscal': None, 'regime_apuracao': None,
+        'suframa_ativo': None,
+        'numero_inscricao_suframa': None # Novo campo
     }
 
     for api in apis:
@@ -246,19 +269,85 @@ def buscar_cnpj_no_banco(cnpj):
             'Email': row_dict.get('email'),
             'Latitude': row_dict.get('latitude'),
             'Longitude': row_dict.get('longitude'),
-            'Google Maps': row_dict.get('google maps', row_dict.get('googlemaps', row_dict.get('maps')))
+            'Google Maps': row_dict.get('google maps', row_dict.get('googlemaps', row_dict.get('maps'))),
+            # Adiciona os novos campos SUFRAMA
+            'Suframa Ativo': row_dict.get('suframa ativo', row_dict.get('suframa_ativo')),
+            'Numero Inscricao Suframa': row_dict.get('numero inscricao suframa', row_dict.get('numero_inscricao_suframa'))
         }
         # Adiciona quaisquer outras colunas que não foram padronizadas
-        outras_chaves = {k.capitalize(): v for k, v in row_dict.items() if k not in standardized_dict and k not in ['cnpj', 'status', 'cód. edata', 'cod. edata', 'cod_edata', 'cód. mega', 'cod. mega', 'cod_mega', 'nome', 'endereco', 'telefone', 'email', 'latitude', 'longitude', 'google maps', 'googlemaps', 'maps']}
+        outras_chaves = {k.capitalize(): v for k, v in row_dict.items() if k not in standardized_dict and k not in [
+            'cnpj', 'status', 'cód. edata', 'cod. edata', 'cod_edata', 'cód. mega', 'cod. mega', 'cod_mega', 'nome', 'endereco', 'telefone', 'email', 'latitude', 'longitude', 'google maps', 'googlemaps', 'maps',
+            'suframa ativo', 'suframa_ativo', 'numero inscricao suframa', 'numero_inscricao_suframa'
+            ]}
         standardized_dict.update(outras_chaves)
         return standardized_dict
     return None
 
 def situacao_cadastral_str(situacao):
-    """Retorna a string da situação cadastral ou 'Não informada'."""
-    if pd.isna(situacao) or situacao is None or str(situacao).strip() == "":
+    """Retorna a string descritiva da situação cadastral, mapeando códigos conhecidos."""
+    if pd.isna(situacao) or situacao is None:
         return "Não informada"
-    return str(situacao).strip()
+
+    situacao_str = str(situacao).strip()
+
+    # Mapeamento de códigos comuns (baseado na Receita Federal/BrasilAPI)
+    mapeamento = {
+        "01": "NULA",
+        "1": "NULA",
+        "02": "ATIVA",
+        "2": "ATIVA",
+        "03": "SUSPENSA",
+        "3": "SUSPENSA",
+        "04": "INAPTA",
+        "4": "INAPTA",
+        "08": "BAIXADA",
+        "8": "BAIXADA"
+    }
+
+    # Retorna a descrição mapeada se for um código conhecido
+    if situacao_str in mapeamento:
+        return mapeamento[situacao_str]
+
+    # Se já for uma descrição (ex: "ATIVA"), retorna ela mesma
+    # (Verifica se não é puramente numérico para evitar confundir com códigos desconhecidos)
+    if not situacao_str.isdigit():
+        return situacao_str.capitalize() # Capitaliza para consistência
+
+    # Se for um número não mapeado ou string vazia, retorna como estava ou "Desconhecida"
+    return situacao_str if situacao_str else "Não informada"
+
+def regime_apuracao_str(valor):
+    """Converte o valor do regime de apuração (Simples Nacional) para uma string descritiva."""
+    if pd.isna(valor) or valor is None:
+        return "Não informado"
+
+    valor_str = str(valor).strip().lower()
+
+    if valor_str in ['true', 'sim', 's']:
+        return "Optante pelo Simples"
+    elif valor_str in ['false', 'nao', 'n']:
+        return "Não Optante pelo Simples"
+    elif valor_str: # Se for outra string não vazia (ex: "MEI")
+        return valor_str.capitalize()
+    else:
+        return "Não informado"
+
+def suframa_status_str(valor):
+    """Converte o valor do status SUFRAMA para uma string descritiva."""
+    if pd.isna(valor) or valor is None:
+        return "Não informado"
+
+    valor_str = str(valor).strip().lower()
+
+    # Adapte estas condições se descobrir os valores reais retornados pelas APIs
+    if valor_str in ['ativo', 'ativa', 'true', 'sim', 's']:
+        return "Ativo"
+    elif valor_str in ['inativo', 'inativa', 'false', 'nao', 'n', 'baixado', 'baixada']:
+        return "Inativo/Baixado"
+    elif valor_str:
+        return f"Informado: {valor_str.capitalize()}" # Mostra o que foi encontrado
+    else:
+        return "Não informado"
 
 def show():
     if 'processing_cnpj' not in st.session_state:
@@ -668,11 +757,14 @@ def show():
             if len(cnpj_limpo) != 14:
                 st.error("CNPJ inválido. Por favor, digite um CNPJ com 14 dígitos.")
             else:
-                # 1. Buscar no banco (ainda busca pelo endereço completo por enquanto)
+                # 1. Buscar no banco
                 row_banco = buscar_cnpj_no_banco(cnpj_limpo)
                 dados_endereco = {}
                 endereco_completo = None
                 situacao, telefone, email = None, None, None
+                nome_empresarial, ocorrencia_fiscal, regime_apuracao = None, None, None
+                suframa_ativo = None
+                numero_inscricao_suframa = None # Nova variável
                 lat, lon = None, None
                 fonte = ""
 
@@ -680,14 +772,17 @@ def show():
                     endereco_banco = row_banco.get("Endereco")
                     if pd.notnull(endereco_banco) and str(endereco_banco).strip().lower() not in ["não encontrado", "cnpj inválido", "", ","]:
                         # Se achou no banco, usa os dados de lá.
-                        # Idealmente, o banco também teria os campos separados, mas por ora usamos o que tem.
                         endereco_completo = endereco_banco
                         situacao = row_banco.get("Status")
                         telefone = row_banco.get("Telefone")
                         email = row_banco.get("Email")
+                        nome_empresarial = row_banco.get("Nome") # Assumindo que 'Nome' no banco é o nome empresarial
+                        ocorrencia_fiscal = row_banco.get("Ocorrencia Fiscal") # Adicionar se existir no banco
+                        regime_apuracao = row_banco.get("Regime Apuracao") # Adicionar se existir no banco
+                        suframa_ativo = row_banco.get("Suframa Ativo")
+                        numero_inscricao_suframa = row_banco.get("Numero Inscricao Suframa") # Carrega do banco
                         lat = row_banco.get("Latitude")
                         lon = row_banco.get("Longitude")
-                        # Tenta preencher dados_endereco com base na string, se possível (simplificado)
                         dados_endereco = {'endereco_completo': endereco_completo} # Placeholder
                         fonte = "Banco de Dados Local"
                         st.info(f"Dados carregados do {fonte}.")
@@ -695,11 +790,16 @@ def show():
                 # 2. Se não achou no banco ou endereço inválido, busca na API
                 if not endereco_completo:
                     with st.spinner("Buscando dados do CNPJ via API..."):
-                        dados_endereco = buscar_endereco_cnpj(cnpj_limpo) # Agora retorna o dict completo
+                        dados_endereco = buscar_endereco_cnpj(cnpj_limpo)
 
                     situacao = dados_endereco.get('situacao')
                     telefone = dados_endereco.get('telefone')
                     email = dados_endereco.get('email')
+                    nome_empresarial = dados_endereco.get('nome_empresarial')
+                    ocorrencia_fiscal = dados_endereco.get('ocorrencia_fiscal')
+                    regime_apuracao = dados_endereco.get('regime_apuracao')
+                    suframa_ativo = dados_endereco.get('suframa_ativo')
+                    numero_inscricao_suframa = dados_endereco.get('numero_inscricao_suframa') # Carrega da API
                     fonte = "API Externa"
 
                     # Constrói o endereço completo a partir dos componentes para obter coordenadas
@@ -710,7 +810,6 @@ def show():
                             lat, lon = obter_coordenadas(endereco_completo)
                     else:
                         lat, lon = None, None
-                        # Se API retornou inválido, usa isso
                         if dados_endereco.get('situacao') == 'Inválido':
                             situacao = 'Inválido'
 
@@ -719,7 +818,10 @@ def show():
                 if situacao == 'Inválido':
                      st.error(f"CNPJ {cnpj_limpo} parece ser inválido ou não encontrado.")
                 # Verifica se temos pelo menos logradouro ou município para exibir algo
-                elif dados_endereco.get('logradouro') or dados_endereco.get('municipio'):
+                elif dados_endereco.get('logradouro') or dados_endereco.get('municipio') or nome_empresarial: # Adicionado nome_empresarial na condição
+                    # Exibe Nome Empresarial primeiro
+                    st.markdown(f"🏢 **Nome Empresarial:** {nome_empresarial or 'Não informado'}")
+
                     # Monta a linha do logradouro
                     logradouro_str = dados_endereco.get('logradouro', '')
                     numero_str = dados_endereco.get('numero', '')
@@ -748,12 +850,25 @@ def show():
                     if link:
                          st.markdown(f"<a href='{link}' target='_blank'>Abrir no Google Maps</a>", unsafe_allow_html=True)
 
-                    st.markdown(f"ℹ️ **Situação:** {situacao_cadastral_str(situacao)}")
+                    st.markdown(f"ℹ️ **Situação Cadastral:** {situacao_cadastral_str(situacao)}")
+                    st.markdown(f"⚖️ **Regime Apuração:** {regime_apuracao_str(regime_apuracao)}")
+                    st.markdown(f"🚨 **Ocorrência Fiscal:** {ocorrencia_fiscal or 'Não informado'}")
+                    st.markdown(f"🔰 **Status SUFRAMA:** {suframa_status_str(suframa_ativo)}")
+                    st.markdown(f"🔢 **Nº Inscrição SUFRAMA:** {numero_inscricao_suframa or 'Não informado'}")
                     st.markdown(f"📞 **Telefone:** {telefone or 'Não informado'}")
                     st.markdown(f"📧 **Email:** {email or 'Não informado'}")
 
                     if pd.notnull(lat) and pd.notnull(lon):
-                        st.success(f"Coordenadas: {lat}, {lon}")
+                        # Formata as coordenadas para usar vírgula como separador decimal na exibição
+                        try:
+                            lat_str = str(float(lat)).replace('.', ',')
+                            lon_str = str(float(lon)).replace('.', ',')
+                            st.success(f"Coordenadas: {lat_str}, {lon_str}") # Usa as strings formatadas
+                        except (ValueError, TypeError):
+                            st.warning(f"Coordenadas encontradas, mas não puderam ser formatadas: {lat}, {lon}")
+                            lat_str, lon_str = str(lat), str(lon) # Usa como string original se falhar
+
+                        # Mantém a lógica original para o mapa, que precisa de floats
                         try:
                             df_temp = pd.DataFrame({"latitude": [float(lat)], "longitude": [float(lon)]})
                             st.map(df_temp)
@@ -766,7 +881,12 @@ def show():
                 else:
                     # Caso não tenha nem logradouro/município, mas talvez outros dados
                     st.error(f"Endereço não encontrado para o CNPJ {cnpj_limpo}.")
-                    st.markdown(f"ℹ️ **Situação:** {situacao_cadastral_str(situacao)}")
+                    st.markdown(f"🏢 **Nome Empresarial:** {nome_empresarial or 'Não informado'}")
+                    st.markdown(f"ℹ️ **Situação Cadastral:** {situacao_cadastral_str(situacao)}")
+                    st.markdown(f"⚖️ **Regime Apuração:** {regime_apuracao_str(regime_apuracao)}")
+                    st.markdown(f"🚨 **Ocorrência Fiscal:** {ocorrencia_fiscal or 'Não informado'}")
+                    st.markdown(f"🔰 **Status SUFRAMA:** {suframa_status_str(suframa_ativo)}")
+                    st.markdown(f"🔢 **Nº Inscrição SUFRAMA:** {numero_inscricao_suframa or 'Não informado'}") # Novo
                     st.markdown(f"📞 **Telefone:** {telefone or 'Não informado'}")
                     st.markdown(f"📧 **Email:** {email or 'Não informado'}")
 

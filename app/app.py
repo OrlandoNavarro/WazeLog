@@ -9,14 +9,17 @@ st.set_page_config(page_title="Wazelog", layout="wide")
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
+# Primeiro inicializa o banco de dados
+from database import init_db
+init_db()
+
+# Depois importa as páginas que podem acessá-lo
 from dashboard_page import show as show_dashboard
 from frota_page import show as show_frota
 from pedidos_page import show as show_pedidos
 from roteirizacao_page import show as show_roteirizacao
 from mapas_page import show as show_mapas
 from cnpj_page import show as show_cnpj
-from database import init_db
-init_db()
 
 # Material Design aprimorado com cabeçalho e menu lateral com ícones
 st.markdown('''
